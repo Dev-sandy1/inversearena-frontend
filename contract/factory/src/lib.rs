@@ -13,6 +13,18 @@ const WHITELIST_PREFIX: Symbol = symbol_short!("WL");
 const MIN_STAKE_KEY: Symbol = symbol_short!("MIN_STK");
 const ARENA_WASM_HASH_KEY: Symbol = symbol_short!("AR_WASM");
 const POOL_PREFIX: Symbol = symbol_short!("POOL");
+const ALL_POOLS_KEY: Symbol = symbol_short!("ALL_P");
+const METADATA_PREFIX: Symbol = symbol_short!("META");
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ArenaMetadata {
+    pub pool_id: u32,
+    pub creator: Address,
+    pub capacity: u32,
+    pub stake_amount: i128,
+}
+
 
 // ── Capacity limits ───────────────────────────────────────────────────────────
 
@@ -240,8 +252,57 @@ impl FactoryContract {
 
         env.storage().instance().set(&pool_key, &true);
 
+        let metadata = ArenaMetadata {
+            pool_id,
+            creator,
+            capacity,
+            stake_amount,
+        };
+        let meta_key = (METADATA_PREFIX, pool_id);
+        env.storage().instance().set(&meta_key, &metadata);
+
+        let mut all_pools: soroban_sdk::Vec<u32> = env
+            .storage()
+            .instance()
+            .get(&ALL_POOLS_KEY)
+            .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
+        all_pools.push_back(pool_id);
+        env.storage().instance().set(&ALL_POOLS_KEY, &all_pools);
+
         env.events()
-            .publish((TOPIC_POOL_CREATED,), (pool_id, creator, capacity, stake_amount));
+            .publish((TOPIC_POOL_CREATED,), metadata);
+    }
+
+
+    // ── Queries ───────────────────────────────────────────────────────────────
+
+    /// Get arena metadata by pool id.
+    pub fn get_arena(env: Env, pool_id: u32) -> Option<ArenaMetadata> {
+        let meta_key = (METADATA_PREFIX, pool_id);
+        env.storage().instance().get(&meta_key)
+    }
+
+    /// Get a paginated list of arena metadata.
+    pub fn get_arenas(env: Env, start_index: u32, limit: u32) -> soroban_sdk::Vec<ArenaMetadata> {
+        let all_pools: soroban_sdk::Vec<u32> = env
+            .storage()
+            .instance()
+            .get(&ALL_POOLS_KEY)
+            .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
+        
+        let mut result = soroban_sdk::Vec::new(&env);
+        let len = all_pools.len();
+        let end = (start_index + limit).min(len);
+        
+        for i in start_index..end {
+            if let Some(pool_id) = all_pools.get(i) {
+                let meta_key = (METADATA_PREFIX, pool_id);
+                if let Some(metadata) = env.storage().instance().get(&meta_key) {
+                    result.push_back(metadata);
+                }
+            }
+        }
+        result
     }
 
     // ── Upgrade mechanism ────────────────────────────────────────────────────
