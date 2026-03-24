@@ -158,3 +158,59 @@ fn test_pending_upgrade_none_after_cancel() {
     client.cancel_upgrade();
     assert!(client.pending_upgrade().is_none());
 }
+
+// ── Admin access control tests ────────────────────────────────────────────────
+
+#[test]
+fn test_set_admin_changes_admin() {
+    let (env, _admin, client) = setup();
+    let new_admin = Address::generate(&env);
+    client.set_admin(&new_admin);
+    assert_eq!(client.admin(), new_admin);
+}
+
+#[test]
+#[should_panic(expected = "not initialized")]
+fn test_set_admin_fails_without_admin() {
+    let env = Env::default();
+    let contract_id = env.register(FactoryContract, ());
+    let client = FactoryContractClient::new(&env, &contract_id);
+    let new_admin = Address::generate(&env);
+    client.set_admin(&new_admin);
+}
+
+#[test]
+#[should_panic(expected = "authorize")]
+fn test_unauthorized_propose_upgrade_panics() {
+    let env = Env::default();
+    let contract_id = env.register(FactoryContract, ());
+    let client = FactoryContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    client.propose_upgrade(&dummy_hash(&env));
+}
+
+#[test]
+#[should_panic(expected = "authorize")]
+fn test_unauthorized_execute_upgrade_panics() {
+    let env = Env::default();
+    let contract_id = env.register(FactoryContract, ());
+    let client = FactoryContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    client.execute_upgrade();
+}
+
+#[test]
+#[should_panic(expected = "authorize")]
+fn test_unauthorized_cancel_upgrade_panics() {
+    let env = Env::default();
+    let contract_id = env.register(FactoryContract, ());
+    let client = FactoryContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    client.cancel_upgrade();
+}

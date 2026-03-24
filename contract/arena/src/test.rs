@@ -710,8 +710,68 @@ fn smoke_10000_round_cycles_without_panic() {
 
     assert_eq!(numbers.len(), CYCLES as usize);
     for (i, &n) in numbers.iter().enumerate() {
-        assert_eq!(n, (i + 1) as u32, "round number out of sequence at index {i}");
+        assert_eq!(
+            n,
+            (i + 1) as u32,
+            "round number out of sequence at index {i}"
+        );
     }
+}
+
+// ── Admin access control tests ────────────────────────────────────────────────
+
+#[test]
+fn test_set_admin_changes_admin() {
+    let (env, _admin, client) = setup_with_admin();
+    let new_admin = Address::generate(&env);
+    client.set_admin(&new_admin);
+    assert_eq!(client.admin(), new_admin);
+}
+
+#[test]
+#[should_panic(expected = "not initialized")]
+fn test_set_admin_fails_without_admin() {
+    let env = Env::default();
+    let contract_id = env.register(ArenaContract, ());
+    let client = ArenaContractClient::new(&env, &contract_id);
+    let new_admin = Address::generate(&env);
+    client.set_admin(&new_admin);
+}
+
+#[test]
+#[should_panic(expected = "authorize")]
+fn test_unauthorized_propose_upgrade_panics() {
+    let env = Env::default();
+    let contract_id = env.register(ArenaContract, ());
+    let client = ArenaContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    client.propose_upgrade(&dummy_hash(&env));
+}
+
+#[test]
+#[should_panic(expected = "authorize")]
+fn test_unauthorized_execute_upgrade_panics() {
+    let env = Env::default();
+    let contract_id = env.register(ArenaContract, ());
+    let client = ArenaContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    client.execute_upgrade();
+}
+
+#[test]
+#[should_panic(expected = "authorize")]
+fn test_unauthorized_cancel_upgrade_panics() {
+    let env = Env::default();
+    let contract_id = env.register(ArenaContract, ());
+    let client = ArenaContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    client.cancel_upgrade();
 }
 
 // ── Issue #232: round timeout and stalled game recovery ──────────────────────

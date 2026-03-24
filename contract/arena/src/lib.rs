@@ -140,6 +140,17 @@ impl ArenaContract {
             .expect("not initialized")
     }
 
+    /// Set a new admin address. Only the current admin can call this.
+    pub fn set_admin(env: Env, new_admin: Address) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&ADMIN_KEY)
+            .expect("not initialized");
+        admin.require_auth();
+        env.storage().instance().set(&ADMIN_KEY, &new_admin);
+    }
+
     // ── Round state machine ──────────────────────────────────────────────────
 
     pub fn start_round(env: Env) -> Result<RoundState, ArenaError> {
@@ -261,10 +272,8 @@ impl ArenaContract {
             .instance()
             .set(&EXECUTE_AFTER_KEY, &execute_after);
 
-        env.events().publish(
-            (TOPIC_UPGRADE_PROPOSED,),
-            (new_wasm_hash, execute_after),
-        );
+        env.events()
+            .publish((TOPIC_UPGRADE_PROPOSED,), (new_wasm_hash, execute_after));
     }
 
     /// Execute a previously proposed upgrade after the 48-hour timelock.
@@ -301,8 +310,7 @@ impl ArenaContract {
         env.events()
             .publish((TOPIC_UPGRADE_EXECUTED,), new_wasm_hash.clone());
 
-        env.deployer()
-            .update_current_contract_wasm(new_wasm_hash);
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
 
     /// Cancel a pending upgrade proposal. Admin-only.
