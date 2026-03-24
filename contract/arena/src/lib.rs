@@ -1,7 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Symbol,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token::TokenClient, Address,
+    BytesN, Env, Symbol,
 };
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -11,7 +12,9 @@ const PAUSED_KEY: Symbol = symbol_short!("PAUSED");
 const PENDING_HASH_KEY: Symbol = symbol_short!("P_HASH");
 const EXECUTE_AFTER_KEY: Symbol = symbol_short!("P_AFTER");
 const PRIZE_POOL_KEY: Symbol = symbol_short!("PRIZE");
-const GAME_STATUS_KEY: Symbol = symbol_short!("G_STATUS");
+const SURVIVOR_COUNT_KEY: Symbol = symbol_short!("S_COUNT");
+const TOKEN_KEY: Symbol = symbol_short!("TOKEN");
+const GAME_FINISHED_KEY: Symbol = symbol_short!("G_FIN");
 
 // ── Timelock constant: 48 hours in seconds ────────────────────────────────────
 
@@ -30,6 +33,7 @@ const TOPIC_UPGRADE_EXECUTED: Symbol = symbol_short!("UP_EXEC");
 const TOPIC_UPGRADE_CANCELLED: Symbol = symbol_short!("UP_CANC");
 const TOPIC_PAUSED: Symbol = symbol_short!("PAUSED");
 const TOPIC_UNPAUSED: Symbol = symbol_short!("UNPAUSED");
+const TOPIC_GAME_ENDED: Symbol = symbol_short!("G_END");
 
 // ── Error codes ───────────────────────────────────────────────────────────────
 
@@ -53,6 +57,9 @@ pub enum ArenaError {
     NoPrizeToClaim = 14,
     AlreadyClaimed = 15,
     ReentrancyGuard = 16,
+    NotASurvivor = 17,
+    GameAlreadyFinished = 18,
+    TokenNotSet = 19,
 }
 
 #[contracttype]
@@ -229,8 +236,39 @@ impl ArenaContract {
             return Err(ArenaError::AlreadyJoined);
         }
 
+        // Token must be configured before players can join.
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&TOKEN_KEY)
+            .ok_or(ArenaError::TokenNotSet)?;
+
+        // Pull stake from player into this contract.
+        TokenClient::new(&env, &token).transfer(&player, &env.current_contract_address(), &amount);
+
+        // Register survivor.
         storage(&env).set(&survivor_key, &());
         bump(&env, &survivor_key);
+
+        // Increment survivor count.
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&SURVIVOR_COUNT_KEY)
+            .unwrap_or(0u32);
+        env.storage()
+            .instance()
+            .set(&SURVIVOR_COUNT_KEY, &(count + 1));
+
+        // Accumulate prize pool.
+        let pool: i128 = env
+            .storage()
+            .instance()
+            .get(&PRIZE_POOL_KEY)
+            .unwrap_or(0i128);
+        env.storage()
+            .instance()
+            .set(&PRIZE_POOL_KEY, &(pool + amount));
 
         Ok(())
     }
@@ -418,36 +456,94 @@ impl ArenaContract {
         storage(&env).get(&DataKey::Submission(round_number, player))
     }
 
+    /// Set the SAC token contract address used for prize pool deposits and payouts.
+    /// Must be called by the admin before any player can `join`.
+    ///
+    /// # Authorization
+    /// Requires admin signature.
+    pub fn set_token(env: Env, token: Address) -> Result<(), ArenaError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&ADMIN_KEY)
+            .expect("not initialized");
+        admin.require_auth();
+        env.storage().instance().set(&TOKEN_KEY, &token);
+        Ok(())
+    }
+
+    /// Return the number of survivors currently registered via `join`.
+    pub fn survivor_count(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&SURVIVOR_COUNT_KEY)
+            .unwrap_or(0u32)
+    }
+
     pub fn claim(env: Env, winner: Address) -> Result<i128, ArenaError> {
         winner.require_auth();
+        require_not_paused(&env)?;
 
+        // Reject if the game has already been won.
         if env
             .storage()
             .instance()
-            .get::<_, bool>(&GAME_STATUS_KEY)
+            .get::<_, bool>(&GAME_FINISHED_KEY)
             .unwrap_or(false)
         {
-            return Err(ArenaError::ReentrancyGuard);
+            return Err(ArenaError::GameAlreadyFinished);
         }
 
-        let prize: i128 = env.storage().instance().get(&PRIZE_POOL_KEY).unwrap_or(0);
-        if prize <= 0 {
+        // Only callable when exactly one survivor remains.
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&SURVIVOR_COUNT_KEY)
+            .unwrap_or(0u32);
+        if count != 1 {
             return Err(ArenaError::NoPrizeToClaim);
         }
 
+        // Caller must be a registered survivor.
+        if !storage(&env).has(&DataKey::Survivor(winner.clone())) {
+            return Err(ArenaError::NotASurvivor);
+        }
+
+        // Guard against a second claim by the same address.
         let prize_key = DataKey::PrizeClaimed(winner.clone());
         if storage(&env).has(&prize_key) {
             return Err(ArenaError::AlreadyClaimed);
         }
 
-        env.storage().instance().set(&GAME_STATUS_KEY, &true);
+        // Prize pool must be positive.
+        let prize: i128 = env
+            .storage()
+            .instance()
+            .get(&PRIZE_POOL_KEY)
+            .unwrap_or(0i128);
+        if prize <= 0 {
+            return Err(ArenaError::NoPrizeToClaim);
+        }
 
+        // Token must be configured.
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&TOKEN_KEY)
+            .ok_or(ArenaError::TokenNotSet)?;
+
+        // ── Effects (write state before external call) ────────────────────────
         storage(&env).set(&prize_key, &prize);
         bump(&env, &prize_key);
-
         env.storage().instance().set(&PRIZE_POOL_KEY, &0i128);
+        env.storage().instance().set(&GAME_FINISHED_KEY, &true);
 
-        env.storage().instance().set(&GAME_STATUS_KEY, &false);
+        // ── Interactions (external SAC call) ──────────────────────────────────
+        TokenClient::new(&env, &token).transfer(&env.current_contract_address(), &winner, &prize);
+
+        // Emit GameEnded event.
+        env.events()
+            .publish((TOPIC_GAME_ENDED,), (winner, prize));
 
         Ok(prize)
     }
