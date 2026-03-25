@@ -1,5 +1,13 @@
 #![no_std]
 
+pub mod bounds;
+
+#[cfg(test)]
+pub(crate) mod invariants;
+
+#[cfg(test)]
+mod abi_guard;
+
 use soroban_sdk::{
     Address, BytesN, Env, Symbol, Vec, contract, contracterror, contractimpl, contracttype,
     symbol_short,
@@ -15,10 +23,12 @@ const SURVIVOR_COUNT_KEY: Symbol = symbol_short!("S_COUNT");
 const CAPACITY_KEY: Symbol = symbol_short!("CAPACITY");
 const TOKEN_KEY: Symbol = symbol_short!("TOKEN");
 const PRIZE_POOL_KEY: Symbol = symbol_short!("PRIZE_P");
+
 const SCHEMA_VERSION_KEY: Symbol = symbol_short!("S_VER");
 
 /// Current schema version. Bump this when storage layout changes.
 const CURRENT_SCHEMA_VERSION: u32 = 1;
+
 
 // ── Timelock constant: 48 hours in seconds ────────────────────────────────────
 
@@ -37,7 +47,17 @@ const TOPIC_UPGRADE_EXECUTED: Symbol = symbol_short!("UP_EXEC");
 const TOPIC_UPGRADE_CANCELLED: Symbol = symbol_short!("UP_CANC");
 const TOPIC_PAUSED: Symbol = symbol_short!("PAUSED");
 const TOPIC_UNPAUSED: Symbol = symbol_short!("UNPAUSED");
+const TOPIC_GAME_ENDED: Symbol = symbol_short!("G_END");
+const TOPIC_ROUND_STARTED: Symbol = symbol_short!("R_START");
+const TOPIC_ROUND_TIMEOUT: Symbol = symbol_short!("R_TOUT");
+const TOPIC_WINNER_SET: Symbol = symbol_short!("WIN_SET");
+const TOPIC_CLAIM: Symbol = symbol_short!("CLAIM");
+
+/// Event payload version. Include in every event data tuple so consumers
+/// can detect schema changes without re-deploying indexers.
+const EVENT_VERSION: u32 = 1;
 const TOPIC_ROUND_RESOLVED: Symbol = symbol_short!("ROUND_OK");
+
 
 // ── Error codes ───────────────────────────────────────────────────────────────
 
@@ -55,10 +75,21 @@ pub enum ArenaError {
     RoundDeadlineOverflow = 8,
     NotInitialized = 9,
     Paused = 10,
-    NoPrizeToClaim = 11,
-    AlreadyClaimed = 12,
-    ReentrancyGuard = 13,
+
+    ArenaFull = 11,
+    AlreadyJoined = 12,
+    InvalidAmount = 13,
+    NoPrizeToClaim = 14,
+    AlreadyClaimed = 15,
+    ReentrancyGuard = 16,
+    NotASurvivor = 17,
+    GameAlreadyFinished = 18,
+    TokenNotSet = 19,
+    /// Per-round submission storage would exceed [`bounds::MAX_SUBMISSIONS_PER_ROUND`](crate::bounds::MAX_SUBMISSIONS_PER_ROUND).
+    MaxSubmissionsPerRound = 20,
+
     PlayerEliminated = 14,
+
 }
 
 #[contracttype]
@@ -169,6 +200,38 @@ impl ArenaContract {
         );
         bump(&env, &DataKey::Round);
 
+        Ok(())
+    }
+
+    // ── Token and Payouts ────────────────────────────────────────────────────
+
+    pub fn set_token(env: Env, token: Address) {
+        require_not_paused(&env).unwrap();
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&ADMIN_KEY)
+            .expect("not initialized");
+        admin.require_auth();
+        env.storage().instance().set(&TOKEN_KEY, &token);
+    }
+
+    pub fn set_winner(env: Env, player: Address, stake: i128, yield_comp: i128) {
+        require_not_paused(&env).unwrap();
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&ADMIN_KEY)
+            .expect("not initialized");
+        admin.require_auth();
+        storage(&env).set(&DataKey::Winner(player.clone()), &(stake, yield_comp));
+        bump(&env, &DataKey::Winner(player));
+        env.events()
+            .publish((TOPIC_WINNER_SET,), (player.clone(), stake, yield_comp));
+    }
+
+    pub fn claim(env: Env, player: Address) -> Result<(), ArenaError> {
+        require_not_paused(&env)?;
         env.storage()
             .instance()
             .set(&SCHEMA_VERSION_KEY, &CURRENT_SCHEMA_VERSION);
@@ -339,6 +402,10 @@ impl ArenaContract {
     }
 
     pub fn join(env: Env, player: Address, amount: i128) -> Result<(), ArenaError> {
+        require_not_paused(&env)?;
+        env.storage()
+            .instance()
+            .extend_ttl(GAME_TTL_THRESHOLD, GAME_TTL_EXTEND_TO);
         player.require_auth();
 
         if amount <= 0 {
@@ -350,11 +417,32 @@ impl ArenaContract {
             return Err(ArenaError::AlreadyJoined);
         }
 
+        let configured_cap: u32 = env
+            .storage()
+            .instance()
+            .get(&CAPACITY_KEY)
+            .unwrap_or(0u32);
+        let effective_cap = if configured_cap == 0 {
+            bounds::MAX_ARENA_PARTICIPANTS
+        } else {
+            configured_cap.min(bounds::MAX_ARENA_PARTICIPANTS)
+        };
+
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&SURVIVOR_COUNT_KEY)
+            .unwrap_or(0u32);
+
+        if count >= effective_cap {
+            return Err(ArenaError::ArenaFull);
+        }
+
         // Token must be configured before players can join.
         let token: Address = env
             .storage()
             .instance()
-            .get(&TOKEN_KEY)
+            .get(&DataKey::Token)
             .ok_or(ArenaError::TokenNotSet)?;
 
         // Pull stake from player into this contract.
@@ -364,17 +452,11 @@ impl ArenaContract {
         storage(&env).set(&survivor_key, &());
         bump(&env, &survivor_key);
 
-        // Increment survivor count.
-        let count: u32 = env
-            .storage()
-            .instance()
-            .get(&SURVIVOR_COUNT_KEY)
-            .unwrap_or(0u32);
         env.storage()
             .instance()
             .set(&SURVIVOR_COUNT_KEY, &(count + 1));
 
-        // Accumulate prize pool.
+        // Accumulate prize pool (instance storage).
         let pool: i128 = env
             .storage()
             .instance()
@@ -434,6 +516,15 @@ impl ArenaContract {
         storage(&env).set(&DataKey::Round, &next_round);
         bump(&env, &DataKey::Round);
 
+        env.events().publish(
+            (TOPIC_ROUND_STARTED,),
+            (
+                next_round.round_number,
+                next_round.round_start_ledger,
+                next_round.round_deadline_ledger,
+            ),
+        );
+
         Ok(next_round)
     }
 
@@ -449,6 +540,7 @@ impl ArenaContract {
     /// * [`ArenaError::NoActiveRound`] — No round is currently active.
     /// * [`ArenaError::SubmissionWindowClosed`] — Current ledger is past the round deadline.
     /// * [`ArenaError::SubmissionAlreadyExists`] — `player` already submitted in this round.
+    /// * [`ArenaError::MaxSubmissionsPerRound`] — [`bounds::MAX_SUBMISSIONS_PER_ROUND`](crate::bounds::MAX_SUBMISSIONS_PER_ROUND) reached for this round.
     ///
     /// # Authorization
     /// Requires `player.require_auth()` — the transaction must be signed by `player`.
@@ -483,11 +575,12 @@ impl ArenaContract {
             return Err(ArenaError::SubmissionAlreadyExists);
         }
 
-        if !player_can_submit(&env, &player) {
-            return Err(ArenaError::PlayerEliminated);
+        if round.total_submissions >= bounds::MAX_SUBMISSIONS_PER_ROUND {
+            return Err(ArenaError::MaxSubmissionsPerRound);
         }
 
-        storage(&env).set(&submission_key, &choice.clone());
+        storage(&env).set(&submission_key, &choice);
+
         bump(&env, &submission_key);
 
         let players_key = DataKey::RoundPlayers(round.round_number);
@@ -547,6 +640,11 @@ impl ArenaContract {
         round.timed_out = true;
         storage(&env).set(&DataKey::Round, &round);
         bump(&env, &DataKey::Round);
+
+        env.events().publish(
+            (TOPIC_ROUND_TIMEOUT,),
+            (round.round_number, round.total_submissions, true),
+        );
 
         Ok(round)
     }
