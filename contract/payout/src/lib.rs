@@ -36,6 +36,8 @@ pub enum PayoutError {
     NoWinners = 6,
     /// Treasury address not set.
     TreasuryNotSet = 7,
+    /// Currency symbol is not mapped to a token contract.
+    UnsupportedCurrency = 8,
 }
 
 /// Storage key for payout records.
@@ -49,6 +51,7 @@ pub enum PayoutError {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
     Payout(Symbol, u32, Address),
+    Currency(Symbol),
 }
 
 #[contracterror]
@@ -62,7 +65,7 @@ pub enum Error {
 pub struct PayoutData {
     pub winner: Address,
     pub amount: i128,
-    pub currency: Address,
+    pub currency: Symbol,
     pub paid: bool,
 }
 
@@ -122,6 +125,25 @@ impl PayoutContract {
             .ok_or(PayoutError::TreasuryNotSet)
     }
 
+    /// Register a token contract address for a currency symbol. Admin-only.
+    pub fn set_currency_token(
+        env: Env,
+        currency: Symbol,
+        token_address: Address,
+    ) -> Result<(), PayoutError> {
+        let admin = require_admin(&env)?;
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::Currency(currency), &token_address);
+        Ok(())
+    }
+
+    /// Return token contract address for a currency symbol.
+    pub fn get_currency_token(env: Env, currency: Symbol) -> Option<Address> {
+        env.storage().instance().get(&DataKey::Currency(currency))
+    }
+
     /// Distribute winnings to a winner. Admin-only.
     ///
     /// Uses a `(context, idempotency_key, winner)` triple to prevent
@@ -152,7 +174,7 @@ impl PayoutContract {
         idempotency_key: u32,
         winner: Address,
         amount: i128,
-        currency: Address,
+        currency: Symbol,
     ) -> Result<(), PayoutError> {
         let admin = require_admin(&env)?;
 
@@ -174,7 +196,12 @@ impl PayoutContract {
             return Err(PayoutError::AlreadyProcessed);
         }
 
-        let token_client = soroban_sdk::token::Client::new(&env, &currency);
+        let currency_address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Currency(currency.clone()))
+            .ok_or(PayoutError::UnsupportedCurrency)?;
+        let token_client = soroban_sdk::token::Client::new(&env, &currency_address);
         token_client.transfer(&env.current_contract_address(), &winner, &amount);
 
         let payout_data = PayoutData {

@@ -1,6 +1,11 @@
 #[cfg(test)]
 use super::*;
-use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env};
+use soroban_sdk::{
+    symbol_short,
+    testutils::Address as _,
+    token::{Client as TokenClient, StellarAssetClient},
+    Address, Env,
+};
 
 fn setup() -> (Env, Address, PayoutContractClient<'static>) {
     let env = Env::default();
@@ -10,10 +15,19 @@ fn setup() -> (Env, Address, PayoutContractClient<'static>) {
     let client = PayoutContractClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
     client.initialize(&admin);
+    let xlm_symbol = symbol_short!("XLM");
+    let xlm_token = setup_currency(&env, &admin);
+    client.set_currency_token(&xlm_symbol, &xlm_token);
+    StellarAssetClient::new(&env, &xlm_token).mint(&client.address, &10_000_000_000i128);
 
     let env_static: &'static Env = unsafe { &*(&env as *const Env) };
     let client = PayoutContractClient::new(env_static, &contract_id);
     (env, admin, client)
+}
+
+fn setup_currency(env: &Env, issuer: &Address) -> Address {
+    let token_id = env.register_stellar_asset_contract(issuer.clone());
+    token_id
 }
 
 // ── initialize ────────────────────────────────────────────────────────────────
@@ -36,11 +50,16 @@ fn test_double_initialize_returns_already_initialized() {
 #[test]
 fn test_admin_can_distribute_winnings() {
     let (env, admin, client) = setup();
+    let currency_addr = setup_currency(&env, &admin);
+    let token = TokenClient::new(&env, &currency_addr);
     let winner = Address::generate(&env);
     let ctx = symbol_short!("arena_1");
     let idempotency_key = 1u32;
     let amount = 1000i128;
     let currency = symbol_short!("XLM");
+
+    client.set_currency_token(&currency, &currency_addr);
+    StellarAssetClient::new(&env, &currency_addr).mint(&client.address, &amount);
 
     assert!(!client.is_payout_processed(&ctx, &idempotency_key, &winner));
     client.distribute_winnings(&admin, &ctx, &idempotency_key, &winner, &amount, &currency);
@@ -49,6 +68,7 @@ fn test_admin_can_distribute_winnings() {
     let payout = client.get_payout(&ctx, &idempotency_key, &winner).unwrap();
     assert_eq!(payout.winner, winner);
     assert_eq!(payout.amount, amount);
+    assert_eq!(token.balance(&winner), amount);
     assert!(payout.paid);
 }
 
@@ -149,6 +169,7 @@ fn test_different_idempotency_keys_allow_multiple_payouts() {
 #[test]
 fn test_get_payout_returns_none_for_unprocessed() {
     let env = Env::default();
+    env.mock_all_auths();
     let contract_id = env.register(PayoutContract, ());
     let client = PayoutContractClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
@@ -161,11 +182,15 @@ fn test_get_payout_returns_none_for_unprocessed() {
 #[test]
 fn test_get_payout_returns_data_for_processed() {
     let (env, admin, client) = setup();
+    let currency_addr = setup_currency(&env, &admin);
     let winner = Address::generate(&env);
     let ctx = symbol_short!("arena_1");
     let idempotency_key = 1u32;
     let amount = 5000i128;
     let currency = symbol_short!("USDC");
+
+    client.set_currency_token(&currency, &currency_addr);
+    StellarAssetClient::new(&env, &currency_addr).mint(&client.address, &amount);
 
     client.distribute_winnings(&admin, &ctx, &idempotency_key, &winner, &amount, &currency);
 
@@ -174,6 +199,49 @@ fn test_get_payout_returns_data_for_processed() {
     assert_eq!(payout.amount, amount);
     assert_eq!(payout.currency, currency);
     assert!(payout.paid);
+}
+
+#[test]
+fn test_distribute_winnings_requires_registered_currency() {
+    let (env, admin, client) = setup();
+    let winner = Address::generate(&env);
+    let ctx = symbol_short!("arena_1");
+    let idempotency_key = 99u32;
+    let amount = 100i128;
+    let currency = symbol_short!("EUR");
+
+    let result =
+        client.try_distribute_winnings(&admin, &ctx, &idempotency_key, &winner, &amount, &currency);
+    assert_eq!(result, Err(Ok(PayoutError::UnsupportedCurrency)));
+}
+
+#[test]
+fn test_distribute_winnings_supports_multiple_currencies() {
+    let (env, admin, client) = setup();
+    let xlm_addr = setup_currency(&env, &admin);
+    let usdc_addr = setup_currency(&env, &admin);
+    let xlm_token = TokenClient::new(&env, &xlm_addr);
+    let usdc_token = TokenClient::new(&env, &usdc_addr);
+
+    let xlm_symbol = symbol_short!("XLM");
+    let usdc_symbol = symbol_short!("USDC");
+    client.set_currency_token(&xlm_symbol, &xlm_addr);
+    client.set_currency_token(&usdc_symbol, &usdc_addr);
+
+    let winner_xlm = Address::generate(&env);
+    let winner_usdc = Address::generate(&env);
+    let ctx = symbol_short!("arena_1");
+    let xlm_amount = 111i128;
+    let usdc_amount = 222i128;
+
+    StellarAssetClient::new(&env, &xlm_addr).mint(&client.address, &xlm_amount);
+    StellarAssetClient::new(&env, &usdc_addr).mint(&client.address, &usdc_amount);
+
+    client.distribute_winnings(&admin, &ctx, &1u32, &winner_xlm, &xlm_amount, &xlm_symbol);
+    client.distribute_winnings(&admin, &ctx, &2u32, &winner_usdc, &usdc_amount, &usdc_symbol);
+
+    assert_eq!(xlm_token.balance(&winner_xlm), xlm_amount);
+    assert_eq!(usdc_token.balance(&winner_usdc), usdc_amount);
 }
 
 // ── admin view ────────────────────────────────────────────────────────────────
@@ -243,7 +311,6 @@ fn test_duplicate_within_same_context_rejected() {
     let currency = symbol_short!("XLM");
 
     client.distribute_winnings(&admin, &ctx, &key, &winner, &amount, &currency);
-    let result =
-        client.try_distribute_winnings(&admin, &ctx, &key, &winner, &amount, &currency);
+    let result = client.try_distribute_winnings(&admin, &ctx, &key, &winner, &amount, &currency);
     assert_eq!(result, Err(Ok(PayoutError::AlreadyProcessed)));
 }
