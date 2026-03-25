@@ -1,48 +1,45 @@
-# Inverse Arena — contract events (indexer reference)
+# Contract Event Reference
 
-Soroban events are published as `(topics, data)` tuples. Topics are short [`Symbol`](https://developers.stellar.org/docs/build/smart-contracts/getting-started) values (see `symbol_short!` in `contract/arena/src/lib.rs`).
+All events include a version marker (`v: u32`) as the first field of the
+data payload. Consumers should check this field to detect schema changes
+without requiring redeployment.
 
-## Operational events (arena)
+Current payload version: **1**
 
-### Upgrade lifecycle
+---
 
-| Topic symbol | When | Data (examples) |
-|--------------|------|-------------------|
-| `UP_PROP` | `propose_upgrade` | `(wasm_hash: BytesN<32>, execute_after: u64)` |
-| `UP_EXEC` | `execute_upgrade` | `wasm_hash: BytesN<32>` |
-| `UP_CANC` | `cancel_upgrade` | `()` |
+## Arena Contract
 
-### Pause policy
+| Topic         | Emitting Function      | Data Fields                              |
+|---------------|------------------------|------------------------------------------|
+| `PAUSED`      | `pause()`              | `(v)`                                    |
+| `UNPAUSED`    | `unpause()`            | `(v)`                                    |
+| `UP_PROP`     | `propose_upgrade()`    | `(v, new_wasm_hash: BytesN<32>, execute_after: u64)` |
+| `UP_EXEC`     | `execute_upgrade()`    | `(v, new_wasm_hash: BytesN<32>)`         |
+| `UP_CANC`     | `cancel_upgrade()`     | `(v)`                                    |
+| `G_END`       | *(reserved)*           | *(not currently emitted)*                |
 
-| Topic | When | Data |
-|-------|------|------|
-| `PAUSED` | `pause` | `paused: bool` (`true`) |
-| `UNPAUSED` | `unpause` | `paused: bool` (`false`) |
+## Factory Contract
 
-### Rounds and outcomes
+| Topic         | Emitting Function      | Data Fields                              |
+|---------------|------------------------|------------------------------------------|
+| `WL_ADD`      | `add_to_whitelist()`   | `(v, host: Address)`                     |
+| `WL_REM`      | `remove_from_whitelist()` | `(v, host: Address)`                  |
+| `POOL_CRE`    | `create_pool()`        | `(v, pool_id: u32, creator: Address, capacity: u32, stake_amount: i128)` |
+| `UP_PROP`     | `propose_upgrade()`    | `(v, new_wasm_hash: BytesN<32>, execute_after: u64)` |
+| `UP_EXEC`     | `execute_upgrade()`    | `(v, new_wasm_hash: BytesN<32>)`         |
+| `UP_CANC`     | `cancel_upgrade()`     | `(v)`                                    |
 
-| Topic | When | Data (machine-readable) |
-|-------|------|-------------------------|
-| `R_START` | `start_round` | `(round_number: u32, round_start_ledger: u32, round_deadline_ledger: u32)` |
-| `R_TOUT` | `timeout_round` | `(round_number: u32, total_submissions: u32, timed_out: bool)` |
-| `WIN_SET` | `set_winner` (admin) | `(player: Address, stake: i128, yield_comp: i128)` |
-| `CLAIM` | successful `claim` | `(player: Address, total_payout: i128, round_number: u32)` |
-| `G_END` | successful `claim` (game concluded) | `(round_number: u32)` |
+## Payout Contract
 
-### Example: indexer pseudo-code
+| Topic         | Emitting Function         | Data Fields                           |
+|---------------|---------------------------|---------------------------------------|
+| `PAYOUT`      | `distribute_winnings()`   | `(v, winner: Address, amount: i128, currency: Symbol)` |
 
-```text
-on topics[0] == "R_START":
-  round_id = data[0]
-  deadline_ledger = data[2]
+---
 
-on topics[0] == "CLAIM":
-  winner = data[0]
-  amount = data[1]
-```
+## Versioning Policy
 
-> **Note:** Topic strings are limited length on-chain; symbols in code use short forms (`R_START`, `R_TOUT`, …).
-
-## Versioning
-
-Adding, removing, or re-shaping event payloads is a **breaking change** for indexers. Bump `schema_version` in `contract/arena/abi_snapshot.json` and document the migration in release notes.
+- The `v` field is always the **first** element of the data tuple.
+- When fields are added, removed, or reordered the version is bumped.
+- Consumers should fall back gracefully on unknown versions.

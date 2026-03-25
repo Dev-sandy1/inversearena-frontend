@@ -10,7 +10,7 @@ mod abi_guard;
 
 use soroban_sdk::{
     Address, BytesN, Env, Symbol, contract, contracterror, contractimpl, contracttype,
-    symbol_short, token,
+    symbol_short, token::{self, Client as TokenClient},
 };
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -21,8 +21,9 @@ const PENDING_HASH_KEY: Symbol = symbol_short!("P_HASH");
 const EXECUTE_AFTER_KEY: Symbol = symbol_short!("P_AFTER");
 const SURVIVOR_COUNT_KEY: Symbol = symbol_short!("S_COUNT");
 const CAPACITY_KEY: Symbol = symbol_short!("CAPACITY");
-/// Accumulated stake in instance storage (see `contract/DATA_MODEL.md`).
-const PRIZE_POOL_KEY: Symbol = symbol_short!("PRIZE");
+const TOKEN_KEY: Symbol = symbol_short!("TOKEN");
+const PRIZE_POOL_KEY: Symbol = symbol_short!("PRIZE_P");
+
 // ── Timelock constant: 48 hours in seconds ────────────────────────────────────
 
 const TIMELOCK_PERIOD: u64 = 48 * 60 * 60;
@@ -45,6 +46,10 @@ const TOPIC_ROUND_STARTED: Symbol = symbol_short!("R_START");
 const TOPIC_ROUND_TIMEOUT: Symbol = symbol_short!("R_TOUT");
 const TOPIC_WINNER_SET: Symbol = symbol_short!("WIN_SET");
 const TOPIC_CLAIM: Symbol = symbol_short!("CLAIM");
+
+/// Event payload version. Include in every event data tuple so consumers
+/// can detect schema changes without re-deploying indexers.
+const EVENT_VERSION: u32 = 1;
 
 // ── Error codes ───────────────────────────────────────────────────────────────
 
@@ -198,7 +203,7 @@ impl ArenaContract {
             .get(&ADMIN_KEY)
             .expect("not initialized");
         admin.require_auth();
-        env.storage().instance().set(&DataKey::Token, &token);
+        env.storage().instance().set(&TOKEN_KEY, &token);
     }
 
     pub fn set_winner(env: Env, player: Address, stake: i128, yield_comp: i128) {
@@ -229,31 +234,26 @@ impl ArenaContract {
         let winner_data: Option<(i128, i128)> = storage(&env).get(&DataKey::Winner(player.clone()));
         match winner_data {
             Some((stake, yield_comp)) => {
-                let mut round = get_round(&env)?;
-                let round_number = round.round_number;
+                // Effects: Mark as claimed and remove winner record BEFORE interaction.
+                storage(&env).set(&DataKey::Claimed(player.clone()), &true);
+                bump(&env, &DataKey::Claimed(player.clone()));
+                storage(&env).remove(&DataKey::Winner(player.clone()));
 
+                let mut round = get_round(&env)?;
+                round.finished = true;
+                storage(&env).set(&DataKey::Round, &round);
+                bump(&env, &DataKey::Round);
+
+                // Interactions: Perform the transfer.
                 let token: Address = env
                     .storage()
                     .instance()
-                    .get(&DataKey::Token)
+                    .get(&TOKEN_KEY)
                     .expect("token not set");
                 let token_client = token::Client::new(&env, &token);
 
                 let total_payout = stake + yield_comp;
                 token_client.transfer(&env.current_contract_address(), &player, &total_payout);
-
-                env.events().publish(
-                    (TOPIC_CLAIM,),
-                    (player.clone(), total_payout, round_number),
-                );
-                env.events().publish((TOPIC_GAME_ENDED,), (round_number,));
-
-                storage(&env).set(&DataKey::Claimed(player.clone()), &true);
-                bump(&env, &DataKey::Claimed(player.clone()));
-
-                round.finished = true;
-                storage(&env).set(&DataKey::Round, &round);
-                bump(&env, &DataKey::Round);
 
                 Ok(())
             }
@@ -315,7 +315,7 @@ impl ArenaContract {
         let admin = Self::admin(env.clone());
         admin.require_auth();
         env.storage().instance().set(&PAUSED_KEY, &true);
-        env.events().publish((TOPIC_PAUSED,), true);
+        env.events().publish((TOPIC_PAUSED,), (EVENT_VERSION,));
     }
 
     /// Unpause the contract. Admin-only.
@@ -323,7 +323,7 @@ impl ArenaContract {
         let admin = Self::admin(env.clone());
         admin.require_auth();
         env.storage().instance().set(&PAUSED_KEY, &false);
-        env.events().publish((TOPIC_UNPAUSED,), false);
+        env.events().publish((TOPIC_UNPAUSED,), (EVENT_VERSION,));
     }
 
     /// Return whether the contract is paused.
@@ -421,8 +421,8 @@ impl ArenaContract {
             .get(&DataKey::Token)
             .ok_or(ArenaError::TokenNotSet)?;
 
-        let token_client = token::Client::new(&env, &token);
-        token_client.transfer(&player, &env.current_contract_address(), &amount);
+        // Pull stake from player into this contract.
+        token::Client::new(&env, &token).transfer(&player, &env.current_contract_address(), &amount);
 
         // Register survivor.
         storage(&env).set(&survivor_key, &());
@@ -704,7 +704,7 @@ impl ArenaContract {
             .set(&EXECUTE_AFTER_KEY, &execute_after);
 
         env.events()
-            .publish((TOPIC_UPGRADE_PROPOSED,), (new_wasm_hash, execute_after));
+            .publish((TOPIC_UPGRADE_PROPOSED,), (EVENT_VERSION, new_wasm_hash, execute_after));
     }
 
     /// Execute a previously proposed upgrade after the 48-hour timelock.
@@ -756,7 +756,7 @@ impl ArenaContract {
         env.storage().instance().remove(&EXECUTE_AFTER_KEY);
 
         env.events()
-            .publish((TOPIC_UPGRADE_EXECUTED,), new_wasm_hash.clone());
+            .publish((TOPIC_UPGRADE_EXECUTED,), (EVENT_VERSION, new_wasm_hash.clone()));
 
         env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
@@ -796,7 +796,7 @@ impl ArenaContract {
         env.storage().instance().remove(&PENDING_HASH_KEY);
         env.storage().instance().remove(&EXECUTE_AFTER_KEY);
 
-        env.events().publish((TOPIC_UPGRADE_CANCELLED,), ());
+        env.events().publish((TOPIC_UPGRADE_CANCELLED,), (EVENT_VERSION,));
     }
 
     /// Return the pending WASM hash and the earliest execution timestamp,
