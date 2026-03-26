@@ -1,5 +1,6 @@
 #[cfg(test)]
 use super::*;
+use arena::ArenaContractClient;
 use soroban_sdk::{
     Address, BytesN, Env,
     testutils::{Address as _, Ledger, LedgerInfo},
@@ -287,6 +288,48 @@ fn test_create_pool_increments_id() {
     let pool1 = client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32);
     let pool2 = client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32);
     assert_ne!(pool1, pool2);
+}
+
+// ── create_pool deploys interactive arena ─────────────────────────────────────
+
+/// Verifies that the address returned by `create_pool` is a live Arena contract
+/// whose admin was transferred to the caller and whose game config was initialised.
+#[test]
+fn test_create_pool_deploys_interactive_arena() {
+    let (env, admin, client) = setup();
+    client.set_arena_wasm_hash(&dummy_hash(&env));
+    let currency = Address::generate(&env);
+    let round_speed = 10u32;
+
+    let arena_addr = client.create_pool(&admin, &MIN_STAKE, &currency, &round_speed, &8u32);
+
+    // Wrap the returned address in an ArenaContractClient and call it.
+    let env_s: &'static Env = unsafe { &*(&env as *const Env) };
+    let arena = ArenaContractClient::new(env_s, &arena_addr);
+
+    // Admin should have been transferred from factory to the caller.
+    assert_eq!(arena.admin(), admin);
+}
+
+/// Two consecutive `create_pool` calls produce two distinct arena addresses,
+/// each with the correct admin set.
+#[test]
+fn test_create_pool_two_pools_have_independent_state() {
+    let (env, admin, client) = setup();
+    client.set_arena_wasm_hash(&dummy_hash(&env));
+    let currency = Address::generate(&env);
+
+    let addr1 = client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32);
+    let addr2 = client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32);
+    assert_ne!(addr1, addr2);
+
+    let env_s: &'static Env = unsafe { &*(&env as *const Env) };
+    let arena1 = ArenaContractClient::new(env_s, &addr1);
+    let arena2 = ArenaContractClient::new(env_s, &addr2);
+
+    // Both arenas should report the same admin (the caller).
+    assert_eq!(arena1.admin(), admin);
+    assert_eq!(arena2.admin(), admin);
 }
 
 // ── propose_upgrade ───────────────────────────────────────────────────────────

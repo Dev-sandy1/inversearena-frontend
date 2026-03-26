@@ -5,6 +5,9 @@ use soroban_sdk::{
     IntoVal, xdr::ToXdr,
 };
 
+#[cfg(test)]
+use arena::ArenaContract;
+
 // ── Storage keys ─────────────────────────────────────────────────────────────
 
 const ADMIN_KEY: Symbol = symbol_short!("ADMIN");
@@ -354,11 +357,12 @@ impl FactoryContract {
         // Deploy the contract.
         #[cfg(test)]
         let arena_address = {
+            let _ = wasm_hash; // consumed via WasmHashNotSet check above; not used in test path
             let addr = env
                 .deployer()
                 .with_current_contract(salt)
                 .deployed_address();
-            env.register_at(&addr, arena::ArenaContract, ());
+            env.register_at(&addr, ArenaContract, ());
             addr
         };
 
