@@ -471,9 +471,17 @@ impl ArenaContract {
         env.storage()
             .instance()
             .extend_ttl(GAME_TTL_THRESHOLD, GAME_TTL_EXTEND_TO);
+        if env
+            .storage()
+            .instance()
+            .get::<_, bool>(&GAME_FINISHED_KEY)
+            .unwrap_or(false)
+        {
+            return Err(ArenaError::GameAlreadyFinished);
+        }
         let mut round = get_round(&env)?;
         if round.finished {
-            return Err(ArenaError::GameAlreadyFinished);
+            return Err(ArenaError::NoActiveRound);
         }
         if round.active {
             if env.ledger().sequence() <= round.round_deadline_ledger {

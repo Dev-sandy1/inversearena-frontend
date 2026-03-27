@@ -152,7 +152,21 @@ impl StakingContract {
 
         // EFFECTS: update storage before external call (CEI)
         let new_shares = position.shares - shares;
-        let new_amount = position.amount - amount;
+        let new_total_staked = total_staked
+            .checked_sub(amount)
+            .ok_or(StakingError::InvalidAmount)?;
+        let new_total_shares = total_shares
+            .checked_sub(shares)
+            .ok_or(StakingError::InvalidAmount)?;
+        let new_amount = if new_shares == 0 {
+            0
+        } else {
+            // Recompute remaining position value from the post-unstake pool ratio.
+            new_shares
+                .checked_mul(new_total_staked)
+                .and_then(|v| v.checked_div(new_total_shares))
+                .ok_or(StakingError::InvalidAmount)?
+        };
 
         if new_shares == 0 {
             env.storage().persistent().remove(&position_key);
@@ -168,10 +182,10 @@ impl StakingContract {
 
         env.storage()
             .instance()
-            .set(&TOTAL_STAKED_KEY, &(total_staked - amount));
+            .set(&TOTAL_STAKED_KEY, &new_total_staked);
         env.storage()
             .instance()
-            .set(&TOTAL_SHARES_KEY, &(total_shares - shares));
+            .set(&TOTAL_SHARES_KEY, &new_total_shares);
 
         // INTERACTION: external call last
         let token_client = token::TokenClient::new(&env, &token_contract);

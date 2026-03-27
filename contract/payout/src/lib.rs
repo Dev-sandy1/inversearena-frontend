@@ -115,11 +115,12 @@ impl PayoutContract {
             .get(&ADMIN_KEY)
             .expect("not initialized");
 
+        // Enforce admin authorization before using caller identity checks.
+        admin.require_auth();
+
         if caller != admin {
             panic_with_error!(&env, PayoutError::UnauthorizedCaller);
         }
-
-        caller.require_auth();
 
         if amount <= 0 {
             panic_with_error!(&env, PayoutError::InvalidAmount);
@@ -218,6 +219,9 @@ impl PayoutContract {
         let share = total_prize / count;
         let dust = total_prize % count;
 
+        // Effects before interactions: mark idempotency guard first.
+        env.storage().instance().set(&prize_key, &true);
+
         let token_client = token::Client::new(&env, &currency);
         let contract_address = env.current_contract_address();
 
@@ -232,9 +236,6 @@ impl PayoutContract {
             env.events()
                 .publish((TOPIC_DUST_COLLECTED,), (treasury, dust, currency));
         }
-
-        // Mark this game's prize as paid out
-        env.storage().instance().set(&prize_key, &true);
 
         Ok(())
     }
