@@ -2338,11 +2338,12 @@ fn resolve_round_3_heads_7_tails_event_payload_correct() {
     // Topic is (RSLVD,); data tuple is
     // (round_number, heads_count, tails_count, outcome, eliminated_count, survivor_count, v)
     // We verify the topic symbol matches "RSLVD".
-    let (topics, _data) = last;
+    let (_contract_id, topics, _data) = last;
     let topic_sym: Symbol = soroban_sdk::symbol_short!("RSLVD");
+    let topic_actual: Symbol = soroban_sdk::FromVal::from_val(&env, &topics.get(0).unwrap());
     assert_eq!(
-        topics.get(0).unwrap(),
-        soroban_sdk::Val::from(topic_sym),
+        topic_actual,
+        topic_sym,
         "event topic must be RSLVD"
     );
 }

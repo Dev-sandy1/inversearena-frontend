@@ -146,28 +146,7 @@ enum DataKey {
     Winner(Address),
 }
 
-/// View of a single player's state within the current round.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UserStateView {
-    /// Whether the player has joined the arena (survivor entry exists).
-    pub is_survivor: bool,
-    /// Whether the player has submitted a choice for the current round.
-    pub has_submitted: bool,
-    /// The player's choice for the current round (only meaningful if has_submitted is true).
-    pub choice: Choice,
-    /// Whether the player has already claimed their prize.
-    pub has_claimed: bool,
-}
 
-/// Aggregate view of the full contract state, useful for frontend polling.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FullStateView {
-    pub config: ArenaConfig,
-    pub round: RoundState,
-    pub is_paused: bool,
-}
 
 // ── Contract ──────────────────────────────────────────────────────────────────
 
@@ -398,6 +377,18 @@ impl ArenaContract {
             timed_out: false,
             finished: false,
         };
+
+        #[cfg(debug_assertions)]
+        {
+            crate::invariants::check_round_flags(&next_round)
+                .expect("start_round: round flags invariant violated");
+            crate::invariants::check_round_number_monotonic(
+                previous_round.round_number,
+                next_round.round_number,
+            )
+            .expect("start_round: round number monotonic invariant violated");
+        }
+
         storage(&env).set(&DataKey::Round, &next_round);
         bump(&env, &DataKey::Round);
         env.events().publish(
@@ -435,6 +426,9 @@ impl ArenaContract {
         }
 
         let mut round = get_round(&env)?;
+        #[cfg(debug_assertions)]
+        let before_submissions = round.total_submissions;
+
         if !round.active {
             return Err(ArenaError::NoActiveRound);
         }
@@ -462,6 +456,18 @@ impl ArenaContract {
         storage(&env).set(&submitters_key, &submitters);
         bump(&env, &submitters_key);
         round.total_submissions += 1;
+
+        #[cfg(debug_assertions)]
+        {
+            crate::invariants::check_submission_count_monotonic(
+                before_submissions,
+                round.total_submissions,
+            )
+            .expect("submit_choice: submission count monotonic invariant violated");
+            crate::invariants::check_round_flags(&round)
+                .expect("submit_choice: round flags invariant violated");
+        }
+
         storage(&env).set(&DataKey::Round, &round);
         bump(&env, &DataKey::Round);
         Ok(())
@@ -473,6 +479,9 @@ impl ArenaContract {
             .instance()
             .extend_ttl(GAME_TTL_THRESHOLD, GAME_TTL_EXTEND_TO);
         let mut round = get_round(&env)?;
+        #[cfg(debug_assertions)]
+        let before = round.clone();
+
         if !round.active {
             return Err(ArenaError::NoActiveRound);
         }
@@ -481,6 +490,17 @@ impl ArenaContract {
         }
         round.active = false;
         round.timed_out = true;
+
+        #[cfg(debug_assertions)]
+        {
+            crate::invariants::check_timeout_transition(&before, &round)
+                .expect("timeout_round: timeout transition invariant violated");
+            crate::invariants::check_round_flags(&round)
+                .expect("timeout_round: round flags invariant violated");
+            crate::invariants::check_round_number_monotonic(before.round_number, round.round_number)
+                .expect("timeout_round: round number monotonic invariant violated");
+        }
+
         storage(&env).set(&DataKey::Round, &round);
         bump(&env, &DataKey::Round);
         env.events().publish(
@@ -504,6 +524,9 @@ impl ArenaContract {
             return Err(ArenaError::GameAlreadyFinished);
         }
         let mut round = get_round(&env)?;
+        #[cfg(debug_assertions)]
+        let before_round_number = round.round_number;
+
         if round.finished {
             return Err(ArenaError::NoActiveRound);
         }
@@ -554,6 +577,18 @@ impl ArenaContract {
             .set(&SURVIVOR_COUNT_KEY, &updated_survivor_count);
 
         round.finished = true;
+
+        #[cfg(debug_assertions)]
+        {
+            crate::invariants::check_round_flags(&round)
+                .expect("resolve_round: round flags invariant violated");
+            crate::invariants::check_round_number_monotonic(
+                before_round_number,
+                round.round_number,
+            )
+            .expect("resolve_round: round number monotonic invariant violated");
+        }
+
         storage(&env).set(&DataKey::Round, &round);
         bump(&env, &DataKey::Round);
 
@@ -573,51 +608,7 @@ impl ArenaContract {
         Ok(round)
     }
 
-    /// Return the state of a specific player for the current round.
-    ///
-    /// # Arguments
-    /// * `env` - The Soroban environment.
-    /// * `player` - Address of the player to query.
-    ///
-    /// # Errors
-    /// * [`ArenaError::NotInitialized`] — Contract not initialised.
-    ///
-    /// # Authorization
-    /// None — read-only, open to any caller.
-    pub fn get_user_state(env: Env, player: Address) -> Result<UserStateView, ArenaError> {
-        let round = get_round(&env)?;
-        let is_survivor = storage(&env).has(&DataKey::Survivor(player.clone()));
-        let submission_key = DataKey::Submission(round.round_number, player.clone());
-        let has_submitted = storage(&env).has(&submission_key);
-        let choice = storage(&env)
-            .get(&submission_key)
-            .unwrap_or(Choice::Heads); // default is irrelevant when has_submitted is false
-        let has_claimed = storage(&env).has(&DataKey::PrizeClaimed(player));
-        Ok(UserStateView {
-            is_survivor,
-            has_submitted,
-            choice,
-            has_claimed,
-        })
-    }
 
-    /// Return a combined snapshot of config, round state, and pause status.
-    ///
-    /// # Errors
-    /// * [`ArenaError::NotInitialized`] — Contract not initialised.
-    ///
-    /// # Authorization
-    /// None — read-only, open to any caller.
-    pub fn get_full_state(env: Env) -> Result<FullStateView, ArenaError> {
-        let config = get_config(&env)?;
-        let round = get_round(&env)?;
-        let is_paused = env.storage().instance().get(&PAUSED_KEY).unwrap_or(false);
-        Ok(FullStateView {
-            config,
-            round,
-            is_paused,
-        })
-    }
 
     pub fn claim(env: Env, winner: Address) -> Result<i128, ArenaError> {
         require_not_paused(&env)?;
