@@ -43,6 +43,9 @@ fn arena_error_codes_match_abi_snapshot() {
         ("InvalidCapacity", ArenaError::InvalidCapacity),
         ("NoPendingUpgrade", ArenaError::NoPendingUpgrade),
         ("TimelockNotExpired", ArenaError::TimelockNotExpired),
+        ("GameNotFinished", ArenaError::GameNotFinished),
+        ("TokenConfigurationLocked", ArenaError::TokenConfigurationLocked),
+        ("UpgradeAlreadyPending", ArenaError::UpgradeAlreadyPending),
     ];
 
     assert_eq!(

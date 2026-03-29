@@ -111,6 +111,20 @@
               "function": {
                 "contract_fn": {
                   "contract_address": "CBWBGJIKFFZEX3K5GRMRMYM7BFZHT66QZAR37SF2SE6V6PQPTLKHARG5",
+                  "function_name": "set_capacity",
+                  "args": [
+                    {
+                      "u32": 10
+                    }
+                  ]
+                }
+              },
+              "sub_invocations": []
+            },
+            {
+              "function": {
+                "contract_fn": {
+                  "contract_address": "CBWBGJIKFFZEX3K5GRMRMYM7BFZHT66QZAR37SF2SE6V6PQPTLKHARG5",
                   "function_name": "set_admin",
                   "args": [
                     {
@@ -174,6 +188,20 @@
               "function": {
                 "contract_fn": {
                   "contract_address": "CBBPKXGAEXK4FU3BQVLBNS3TV2UYLEZJUEQT4WPDGPHUFET7LKEXIFF2",
+                  "function_name": "set_capacity",
+                  "args": [
+                    {
+                      "u32": 10
+                    }
+                  ]
+                }
+              },
+              "sub_invocations": []
+            },
+            {
+              "function": {
+                "contract_fn": {
+                  "contract_address": "CBBPKXGAEXK4FU3BQVLBNS3TV2UYLEZJUEQT4WPDGPHUFET7LKEXIFF2",
                   "function_name": "set_admin",
                   "args": [
                     {
@@ -227,6 +255,20 @@
                   "args": [
                     {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                    }
+                  ]
+                }
+              },
+              "sub_invocations": []
+            },
+            {
+              "function": {
+                "contract_fn": {
+                  "contract_address": "CDTGMSXLPVPOZUWY4W73JFCKSAKESWZSSXQBJ3SWQWDJAU7IRFDK7T6B",
+                  "function_name": "set_capacity",
+                  "args": [
+                    {
+                      "u32": 10
                     }
                   ]
                 }
@@ -290,6 +332,20 @@
                   "args": [
                     {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                    }
+                  ]
+                }
+              },
+              "sub_invocations": []
+            },
+            {
+              "function": {
+                "contract_fn": {
+                  "contract_address": "CDRS74TAHZSJNMABUU4H3KI5XFH27KY7O7W6GGWPILTOUYMB7A4JDGO4",
+                  "function_name": "set_capacity",
+                  "args": [
+                    {
+                      "u32": 10
                     }
                   ]
                 }
@@ -353,6 +409,20 @@
                   "args": [
                     {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                    }
+                  ]
+                }
+              },
+              "sub_invocations": []
+            },
+            {
+              "function": {
+                "contract_fn": {
+                  "contract_address": "CCLYKFC5EX4TUBSS56XDVPFJFMO33W7WP7MTMK25EJVV7JKPCJJSXTBI",
+                  "function_name": "set_capacity",
+                  "args": [
+                    {
+                      "u32": 10
                     }
                   ]
                 }
@@ -1340,6 +1410,14 @@
                       },
                       {
                         "key": {
+                          "symbol": "CAPACITY"
+                        },
+                        "val": {
+                          "u32": 10
+                        }
+                      },
+                      {
+                        "key": {
                           "symbol": "TOKEN"
                         },
                         "val": {
@@ -1540,6 +1618,14 @@
                         },
                         "val": {
                           "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                        }
+                      },
+                      {
+                        "key": {
+                          "symbol": "CAPACITY"
+                        },
+                        "val": {
+                          "u32": 10
                         }
                       },
                       {
@@ -1748,6 +1834,14 @@
                       },
                       {
                         "key": {
+                          "symbol": "CAPACITY"
+                        },
+                        "val": {
+                          "u32": 10
+                        }
+                      },
+                      {
+                        "key": {
                           "symbol": "TOKEN"
                         },
                         "val": {
@@ -1952,6 +2046,14 @@
                       },
                       {
                         "key": {
+                          "symbol": "CAPACITY"
+                        },
+                        "val": {
+                          "u32": 10
+                        }
+                      },
+                      {
+                        "key": {
                           "symbol": "TOKEN"
                         },
                         "val": {
@@ -2152,6 +2254,14 @@
                         },
                         "val": {
                           "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                        }
+                      },
+                      {
+                        "key": {
+                          "symbol": "CAPACITY"
+                        },
+                        "val": {
+                          "u32": 10
                         }
                       },
                       {

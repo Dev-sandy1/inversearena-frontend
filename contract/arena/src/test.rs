@@ -199,8 +199,11 @@ fn setup_finished_game_with_winner(
     let (env, admin, client, token_id, players) = setup_game(5, 3);
     let asset = StellarAssetClient::new(&env, &token_id);
     let existing_pool = TEST_REQUIRED_STAKE * players.len() as i128;
-    if prize_amount > existing_pool {
-        asset.mint(&client.address, &(prize_amount - existing_pool));
+    // set_winner adds prize_amount to the existing pool (from player joins),
+    // so the contract needs enough balance to cover both.
+    let total_needed = existing_pool + prize_amount;
+    if total_needed > existing_pool {
+        asset.mint(&client.address, &(total_needed - existing_pool));
     }
 
     set_ledger_sequence(&env, 1);
@@ -478,12 +481,28 @@ fn test_propose_upgrade_stores_pending() {
 }
 
 #[test]
-fn test_propose_upgrade_replaces_previous() {
+fn test_propose_upgrade_rejects_when_pending() {
     let (env, _admin, client) = setup_with_admin();
     let hash1 = BytesN::from_array(&env, &[1u8; 32]);
     let hash2 = BytesN::from_array(&env, &[2u8; 32]);
 
     client.propose_upgrade(&hash1);
+    let result = client.try_propose_upgrade(&hash2);
+    assert_eq!(result, Err(Ok(ArenaError::UpgradeAlreadyPending)));
+
+    // Original proposal remains intact.
+    let pending = client.pending_upgrade().unwrap();
+    assert_eq!(pending.0, hash1);
+}
+
+#[test]
+fn test_propose_upgrade_allowed_after_cancel() {
+    let (env, _admin, client) = setup_with_admin();
+    let hash1 = BytesN::from_array(&env, &[1u8; 32]);
+    let hash2 = BytesN::from_array(&env, &[2u8; 32]);
+
+    client.propose_upgrade(&hash1);
+    client.cancel_upgrade();
     client.propose_upgrade(&hash2);
 
     let pending = client.pending_upgrade().unwrap();
@@ -1345,7 +1364,7 @@ fn resolve_round_can_chain_across_multiple_rounds_until_one_survivor_remains() {
 
     set_ledger_sequence(&env, 66);
     let resolved_one = client.resolve_round();
-    assert!(resolved_one.finished);
+    assert!(!resolved_one.finished);
     assert_eq!(client.get_arena_state().survivors_count, 3);
 
     set_ledger_sequence(&env, 70);
@@ -1841,8 +1860,9 @@ fn round_state_machine_invariant_suite_happy_path() {
 fn claim_single_winner_gets_correct_prize() {
     let (_env, _admin, client, _token_id, winner) = setup_finished_game_with_winner(1_500i128);
 
+    // Pool contains player deposits (3 × 100 = 300) + prize_amount (1500) = 1800
     let claimed = client.claim(&winner);
-    assert_eq!(claimed, 1_500i128);
+    assert_eq!(claimed, 1_800i128);
 }
 
 #[test]
@@ -1860,14 +1880,17 @@ fn claim_rejects_before_game_is_finished() {
 }
 
 #[test]
-fn claim_second_set_winner_overwrites_prize_pool() {
-    let (_env, _admin, client, _token_id, winner) = setup_finished_game_with_winner(1_500i128);
-    client.set_winner(&winner, &1_000i128, &500i128);
-    client.set_winner(&winner, &800i128, &200i128);
+fn claim_second_set_winner_adds_to_prize_pool() {
+    let (env, _admin, client, token_id, winner) = setup_finished_game_with_winner(0i128);
+    // Pool starts with 300 (3 players × 100) + 0 (prize_amount) = 300.
+    // set_winner now adds to existing pool instead of overwriting.
+    let asset = StellarAssetClient::new(&env, &token_id);
+    asset.mint(&client.address, &700i128); // total contract balance = 300 + 700 = 1000
+    client.set_winner(&winner, &200i128, &100i128); // pool = 300 + 300 = 600
+    client.set_winner(&winner, &150i128, &50i128); // pool = 600 + 200 = 800
 
-    // The active prize pool is now 1000 (800 + 200), not 1500.
-    let claimed_b = client.claim(&winner);
-    assert_eq!(claimed_b, 1_000i128);
+    let claimed = client.claim(&winner);
+    assert_eq!(claimed, 800i128);
 }
 
 #[test]
@@ -2199,8 +2222,9 @@ fn claim_fails_for_non_designated_winner() {
 fn claim_succeeds_only_for_designated_winner() {
     let (_env, _admin, client, _token_id, winner) = setup_finished_game_with_winner(300i128);
 
+    // Pool contains player deposits (3 × 100 = 300) + prize_amount (300) = 600
     let prize = client.claim(&winner);
-    assert_eq!(prize, 300i128);
+    assert_eq!(prize, 600i128);
 }
 
 #[test]

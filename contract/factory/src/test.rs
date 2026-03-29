@@ -267,11 +267,20 @@ fn test_create_pool_without_wasm_hash_returns_wasm_hash_not_set() {
 // ── create_pool capacity validation ───────────────────────────────────────────
 
 #[test]
-fn test_create_pool_with_capacity_one_succeeds() {
+fn test_create_pool_with_capacity_one_returns_invalid_capacity() {
     let (env, admin, client) = setup();
     client.set_arena_wasm_hash(&dummy_hash(&env));
     let currency = supported_currency(&env, &client);
-    client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &1u32);
+    let result = client.try_create_pool(&admin, &MIN_STAKE, &currency, &10u32, &1u32);
+    assert_eq!(result, Err(Ok(Error::InvalidCapacity)));
+}
+
+#[test]
+fn test_create_pool_with_capacity_two_succeeds() {
+    let (env, admin, client) = setup();
+    client.set_arena_wasm_hash(&dummy_hash(&env));
+    let currency = supported_currency(&env, &client);
+    client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &2u32);
 }
 
 #[test]
@@ -392,12 +401,28 @@ fn test_propose_upgrade_stores_pending() {
 }
 
 #[test]
-fn test_propose_upgrade_replaces_previous() {
+fn test_propose_upgrade_rejects_when_pending() {
     let (env, _admin, client) = setup();
     let hash1 = BytesN::from_array(&env, &[1u8; 32]);
     let hash2 = BytesN::from_array(&env, &[2u8; 32]);
 
     client.propose_upgrade(&hash1);
+    let result = client.try_propose_upgrade(&hash2);
+    assert_eq!(result, Err(Ok(Error::UpgradeAlreadyPending)));
+
+    // Original proposal remains intact.
+    let pending = client.pending_upgrade().unwrap();
+    assert_eq!(pending.0, hash1);
+}
+
+#[test]
+fn test_propose_upgrade_allowed_after_cancel() {
+    let (env, _admin, client) = setup();
+    let hash1 = BytesN::from_array(&env, &[1u8; 32]);
+    let hash2 = BytesN::from_array(&env, &[2u8; 32]);
+
+    client.propose_upgrade(&hash1);
+    client.cancel_upgrade();
     client.propose_upgrade(&hash2);
 
     let pending = client.pending_upgrade().unwrap();

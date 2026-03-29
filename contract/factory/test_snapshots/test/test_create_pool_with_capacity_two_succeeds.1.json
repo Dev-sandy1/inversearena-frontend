@@ -87,7 +87,7 @@
                   "u32": 10
                 },
                 {
-                  "u32": 1
+                  "u32": 2
                 }
               ]
             }
@@ -101,6 +101,20 @@
                   "args": [
                     {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                    }
+                  ]
+                }
+              },
+              "sub_invocations": []
+            },
+            {
+              "function": {
+                "contract_fn": {
+                  "contract_address": "CBWBGJIKFFZEX3K5GRMRMYM7BFZHT66QZAR37SF2SE6V6PQPTLKHARG5",
+                  "function_name": "set_capacity",
+                  "args": [
+                    {
+                      "u32": 2
                     }
                   ]
                 }
@@ -178,7 +192,7 @@
                         "symbol": "capacity"
                       },
                       "val": {
-                        "u32": 1
+                        "u32": 2
                       }
                     },
                     {
@@ -628,6 +642,14 @@
                       },
                       {
                         "key": {
+                          "symbol": "CAPACITY"
+                        },
+                        "val": {
+                          "u32": 2
+                        }
+                      },
+                      {
+                        "key": {
                           "symbol": "TOKEN"
                         },
                         "val": {
@@ -692,7 +714,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "u32": 1
+                  "u32": 2
                 },
                 {
                   "i128": {

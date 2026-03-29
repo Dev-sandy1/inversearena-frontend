@@ -27,7 +27,10 @@
     "NotEnoughPlayers": 23,
     "InvalidCapacity": 24,
     "NoPendingUpgrade": 25,
-    "TimelockNotExpired": 26
+    "TimelockNotExpired": 26,
+    "GameNotFinished": 27,
+    "TokenConfigurationLocked": 28,
+    "UpgradeAlreadyPending": 29
   },
   "event_topics": [
     "UP_PROP",

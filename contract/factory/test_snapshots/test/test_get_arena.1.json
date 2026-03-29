@@ -111,6 +111,20 @@
               "function": {
                 "contract_fn": {
                   "contract_address": "CBWBGJIKFFZEX3K5GRMRMYM7BFZHT66QZAR37SF2SE6V6PQPTLKHARG5",
+                  "function_name": "set_capacity",
+                  "args": [
+                    {
+                      "u32": 10
+                    }
+                  ]
+                }
+              },
+              "sub_invocations": []
+            },
+            {
+              "function": {
+                "contract_fn": {
+                  "contract_address": "CBWBGJIKFFZEX3K5GRMRMYM7BFZHT66QZAR37SF2SE6V6PQPTLKHARG5",
                   "function_name": "set_admin",
                   "args": [
                     {
@@ -625,6 +639,14 @@
                         },
                         "val": {
                           "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                        }
+                      },
+                      {
+                        "key": {
+                          "symbol": "CAPACITY"
+                        },
+                        "val": {
+                          "u32": 10
                         }
                       },
                       {

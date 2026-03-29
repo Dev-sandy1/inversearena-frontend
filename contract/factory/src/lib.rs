@@ -96,7 +96,7 @@ pub enum Error {
     InvalidStakeAmount = 8,
     /// A pool with the given `pool_id` was already registered.
     PoolAlreadyExists = 9,
-    /// Pool capacity is zero or exceeds `MAX_POOL_CAPACITY`.
+    /// Pool capacity is below 2 or exceeds `MAX_POOL_CAPACITY`.
     InvalidCapacity = 10,
     /// `create_pool` called before `set_arena_wasm_hash` has been called.
     WasmHashNotSet = 11,
@@ -104,6 +104,8 @@ pub enum Error {
     MalformedUpgradeState = 12,
     /// `create_pool` called with a token that has not been added via `add_supported_token`.
     UnsupportedToken = 13,
+    /// `propose_upgrade` called while a pending upgrade proposal already exists.
+    UpgradeAlreadyPending = 14,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -300,14 +302,14 @@ impl FactoryContract {
     /// Create a new pool (arena). Only admin or whitelisted hosts can call this.
     ///
     /// The caller must provide a valid stake amount >= minimum stake and a
-    /// capacity in range [1, MAX_POOL_CAPACITY]. `pool_id` must be unique.
+    /// capacity in range [2, MAX_POOL_CAPACITY]. `pool_id` must be unique.
     /// Emits `PoolCreated(pool_id, creator, capacity, stake_amount)`.
     ///
     /// # Errors
     /// * [`Error::NotInitialized`] — contract not initialised.
     /// * [`Error::Unauthorized`] — `caller` is neither admin nor whitelisted.
     /// * [`Error::PoolAlreadyExists`] — a pool with `pool_id` already exists.
-    /// * [`Error::InvalidCapacity`] — `capacity` is 0 or > `MAX_POOL_CAPACITY`.
+    /// * [`Error::InvalidCapacity`] — `capacity` is < 2 or > `MAX_POOL_CAPACITY`.
     /// * [`Error::InvalidStakeAmount`] — `stake_amount` is zero or negative.
     /// * [`Error::StakeBelowMinimum`] — `stake_amount` is below the configured minimum.
     /// * [`Error::WasmHashNotSet`] — `set_arena_wasm_hash` has not been called yet.
@@ -338,7 +340,7 @@ impl FactoryContract {
             return Err(Error::UnsupportedToken);
         }
 
-        if capacity == 0 || capacity > MAX_POOL_CAPACITY {
+        if capacity < 2 || capacity > MAX_POOL_CAPACITY {
             return Err(Error::InvalidCapacity);
         }
 
@@ -424,6 +426,12 @@ impl FactoryContract {
             soroban_sdk::vec![&env, currency.into_val(&env)],
         );
 
+        env.invoke_contract::<()>(
+            &arena_address,
+            &soroban_sdk::Symbol::new(&env, "set_capacity"),
+            soroban_sdk::vec![&env, capacity.into_val(&env)],
+        );
+
         // 3. Transfer admin to the caller after factory-owned initialization is complete.
         env.invoke_contract::<()>(
             &arena_address,
@@ -500,6 +508,10 @@ impl FactoryContract {
     pub fn propose_upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
         let admin = require_admin(&env)?;
         admin.require_auth();
+
+        if env.storage().instance().has(&PENDING_HASH_KEY) {
+            return Err(Error::UpgradeAlreadyPending);
+        }
 
         let execute_after: u64 = env.ledger().timestamp() + TIMELOCK_PERIOD;
         env.storage()

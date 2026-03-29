@@ -76,6 +76,7 @@ pub enum ArenaError {
     TimelockNotExpired = 26,
     GameNotFinished = 27,
     TokenConfigurationLocked = 28,
+    UpgradeAlreadyPending = 29,
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -310,7 +311,14 @@ impl ArenaContract {
             .ok_or(ArenaError::InvalidAmount)?;
         storage(&env).set(&DataKey::Winner(player.clone()), &());
         bump(&env, &DataKey::Winner(player.clone()));
-        env.storage().instance().set(&PRIZE_POOL_KEY, &prize);
+        let existing_pool: i128 = env
+            .storage()
+            .instance()
+            .get(&PRIZE_POOL_KEY)
+            .unwrap_or(0i128);
+        env.storage()
+            .instance()
+            .set(&PRIZE_POOL_KEY, &(existing_pool + prize));
         env.events()
             .publish((TOPIC_WINNER_SET,), (player, stake, yield_comp));
         Ok(())
@@ -620,9 +628,8 @@ impl ArenaContract {
             .set(&SURVIVOR_COUNT_KEY, &updated_survivor_count);
         if updated_survivor_count <= 1 {
             env.storage().instance().set(&GAME_FINISHED_KEY, &true);
+            round.finished = true;
         }
-
-        round.finished = true;
 
         #[cfg(debug_assertions)]
         {
@@ -780,6 +787,9 @@ impl ArenaContract {
             .get(&ADMIN_KEY)
             .ok_or(ArenaError::NotInitialized)?;
         admin.require_auth();
+        if env.storage().instance().has(&PENDING_HASH_KEY) {
+            return Err(ArenaError::UpgradeAlreadyPending);
+        }
         let execute_after: u64 = env.ledger().timestamp() + TIMELOCK_PERIOD;
         env.storage()
             .instance()
