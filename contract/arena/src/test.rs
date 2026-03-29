@@ -2227,6 +2227,51 @@ fn timeout_round_event_reflects_timed_out_state() {
     assert_eq!(timed_out.round_number, 1);
 }
 
+#[test]
+fn pause_unpause_emit_versioned_payloads() {
+    use soroban_sdk::testutils::Events as _;
+
+    let (env, _admin, client) = setup_with_admin();
+
+    client.pause();
+    let pause_event = env.events().all().last().unwrap();
+    let (_contract, pause_topics, pause_data) = pause_event;
+    let pause_topic: Symbol = pause_topics.get(0).unwrap().into_val(&env);
+    let pause_payload: (u32,) = pause_data.into_val(&env);
+    assert_eq!(pause_topic, symbol_short!("PAUSED"));
+    assert_eq!(pause_payload, (1u32,));
+
+    client.unpause();
+    let unpause_event = env.events().all().last().unwrap();
+    let (_contract, unpause_topics, unpause_data) = unpause_event;
+    let unpause_topic: Symbol = unpause_topics.get(0).unwrap().into_val(&env);
+    let unpause_payload: (u32,) = unpause_data.into_val(&env);
+    assert_eq!(unpause_topic, symbol_short!("UNPAUSED"));
+    assert_eq!(unpause_payload, (1u32,));
+}
+
+#[test]
+fn set_winner_event_includes_version_field() {
+    use soroban_sdk::testutils::Events as _;
+
+    let (env, admin, client) = setup_with_admin();
+    let (_asset, token_id) = setup_token(&env, &admin);
+    client.set_token(&token_id);
+    client.init(&5, &TEST_REQUIRED_STAKE);
+
+    let winner = Address::generate(&env);
+    client.set_winner(&winner, &100i128, &10i128);
+
+    let winner_event = env.events().all().last().unwrap();
+    let (_contract, topics, data) = winner_event;
+    let topic: Symbol = topics.get(0).unwrap().into_val(&env);
+    let payload: (Address, i128, i128, u32) = data.into_val(&env);
+
+    assert_eq!(topic, symbol_short!("WIN_SET"));
+    assert_eq!(payload.0, winner);
+    assert_eq!(payload.3, 1u32);
+}
+
 // ── Issue #358: claim() must verify caller is the designated winner ────────────
 
 #[test]

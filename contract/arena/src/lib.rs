@@ -243,14 +243,14 @@ impl ArenaContract {
         let admin = Self::admin(env.clone());
         admin.require_auth();
         env.storage().instance().set(&PAUSED_KEY, &true);
-        env.events().publish((TOPIC_PAUSED,), ());
+        env.events().publish((TOPIC_PAUSED,), (EVENT_VERSION,));
     }
 
     pub fn unpause(env: Env) {
         let admin = Self::admin(env.clone());
         admin.require_auth();
         env.storage().instance().set(&PAUSED_KEY, &false);
-        env.events().publish((TOPIC_UNPAUSED,), ());
+        env.events().publish((TOPIC_UNPAUSED,), (EVENT_VERSION,));
     }
 
     pub fn is_paused(env: Env) -> bool {
@@ -332,7 +332,7 @@ impl ArenaContract {
             .instance()
             .set(&PRIZE_POOL_KEY, &(existing_pool + prize));
         env.events()
-            .publish((TOPIC_WINNER_SET,), (player, stake, yield_comp));
+            .publish((TOPIC_WINNER_SET,), (player, stake, yield_comp, EVENT_VERSION));
         Ok(())
     }
 
@@ -851,8 +851,10 @@ impl ArenaContract {
         env.storage()
             .instance()
             .set(&EXECUTE_AFTER_KEY, &execute_after);
-        env.events()
-            .publish((TOPIC_UPGRADE_PROPOSED,), (new_wasm_hash, execute_after));
+        env.events().publish(
+            (TOPIC_UPGRADE_PROPOSED,),
+            (EVENT_VERSION, new_wasm_hash, execute_after),
+        );
         Ok(())
     }
 
@@ -878,8 +880,10 @@ impl ArenaContract {
             .ok_or(ArenaError::NoPendingUpgrade)?;
         env.storage().instance().remove(&PENDING_HASH_KEY);
         env.storage().instance().remove(&EXECUTE_AFTER_KEY);
-        env.events()
-            .publish((TOPIC_UPGRADE_EXECUTED,), new_wasm_hash.clone());
+        env.events().publish(
+            (TOPIC_UPGRADE_EXECUTED,),
+            (EVENT_VERSION, new_wasm_hash.clone()),
+        );
         env.deployer().update_current_contract_wasm(new_wasm_hash);
         Ok(())
     }
@@ -896,7 +900,8 @@ impl ArenaContract {
         }
         env.storage().instance().remove(&PENDING_HASH_KEY);
         env.storage().instance().remove(&EXECUTE_AFTER_KEY);
-        env.events().publish((TOPIC_UPGRADE_CANCELLED,), ());
+        env.events()
+            .publish((TOPIC_UPGRADE_CANCELLED,), (EVENT_VERSION,));
         Ok(())
     }
 
