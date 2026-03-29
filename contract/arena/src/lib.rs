@@ -170,7 +170,7 @@ impl ArenaContract {
         if round_speed_in_ledgers == 0 || round_speed_in_ledgers > bounds::MAX_SPEED_LEDGERS {
             return Err(ArenaError::InvalidRoundSpeed);
         }
-        if required_stake_amount <= 0 {
+        if required_stake_amount < bounds::MIN_REQUIRED_STAKE {
             return Err(ArenaError::InvalidAmount);
         }
         env.storage()
