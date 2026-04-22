@@ -21,6 +21,9 @@ const PRIZE_POOL_KEY: Symbol = symbol_short!("PRIZE_P");
 const GAME_STATUS_KEY: Symbol = symbol_short!("G_STATUS");
 const GAME_FINISHED_KEY: Symbol = symbol_short!("G_FIN");
 const WINNER_SET_KEY: Symbol = symbol_short!("W_SET");
+const STATE_KEY: Symbol = symbol_short!("STATE");
+const SUBMITTED_COUNT_KEY: Symbol = symbol_short!("SUB_CNT");
+const DEADLINE_TS_KEY: Symbol = symbol_short!("DEAD_TS");
 
 // ── Timelock: 48 hours in seconds ─────────────────────────────────────────────
 const TIMELOCK_PERIOD: u64 = 48 * 60 * 60;
@@ -121,11 +124,36 @@ pub struct ArenaStateView {
     pub potential_payout: i128,
 }
 
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UserStateView {
     pub is_active: bool,
     pub has_won: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ArenaState {
+    Pending,
+    Active,
+    Completed,
+    Cancelled,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoundStats {
+    pub round: u32,
+    pub round_deadline: u64,
+    pub survivors_remaining: u32,
+    pub choices_submitted: u32,
+    pub time_remaining_seconds: i64,
+}
+
+macro_rules! assert_state {
+    ($current:expr, $expected:pat) => {
+        match $current {
+            $expected => {},
+            _ => panic!("Invalid state transition"),
+        }
+    };
 }
 
 #[contracttype]
@@ -152,6 +180,7 @@ enum DataKey {
     Eliminated(Address),
     PrizeClaimed(Address),
     Winner(Address),
+    State,
 }
 
 
@@ -200,6 +229,8 @@ impl ArenaContract {
             },
         );
         bump(&env, &DataKey::Round);
+        set_state(&env, ArenaState::Pending);
+        env.storage().instance().set(&SUBMITTED_COUNT_KEY, &0u32);
         Ok(())
     }
 
@@ -449,6 +480,10 @@ impl ArenaContract {
 
     pub fn start_round(env: Env) -> Result<RoundState, ArenaError> {
         require_not_paused(&env)?;
+        let current_state = get_state(&env);
+        if current_state == ArenaState::Completed || current_state == ArenaState::Cancelled {
+            panic!("Game over");
+        }
         if env
             .storage()
             .instance()
@@ -500,6 +535,15 @@ impl ArenaContract {
 
         storage(&env).set(&DataKey::Round, &next_round);
         bump(&env, &DataKey::Round);
+
+        if next_round.round_number == 1 {
+            set_state(&env, ArenaState::Active);
+        }
+        env.storage().instance().set(&SUBMITTED_COUNT_KEY, &0u32);
+        
+        let deadline_ts = env.ledger().timestamp() + (config.round_speed_in_ledgers as u64 * 5);
+        env.storage().instance().set(&DEADLINE_TS_KEY, &deadline_ts);
+
         env.events().publish(
             (TOPIC_ROUND_STARTED,),
             (
@@ -565,6 +609,9 @@ impl ArenaContract {
         storage(&env).set(&submitters_key, &submitters);
         bump(&env, &submitters_key);
         round.total_submissions += 1;
+
+        let sub_count: u32 = env.storage().instance().get(&SUBMITTED_COUNT_KEY).unwrap_or(0);
+        env.storage().instance().set(&SUBMITTED_COUNT_KEY, &(sub_count + 1));
 
         #[cfg(debug_assertions)]
         {
@@ -702,6 +749,10 @@ impl ArenaContract {
 
         storage(&env).set(&DataKey::Round, &round);
         bump(&env, &DataKey::Round);
+
+        if round.finished {
+            set_state(&env, ArenaState::Completed);
+        }
 
         env.events().publish(
             (TOPIC_ROUND_RESOLVED,),
@@ -930,6 +981,61 @@ impl ArenaContract {
             _ => None,
         }
     }
+
+    pub fn get_round_stats(env: Env, _arena_id: u64) -> RoundStats {
+        let state = get_state(&env);
+        if state != ArenaState::Active {
+            return RoundStats {
+                round: 0,
+                round_deadline: 0,
+                survivors_remaining: 0,
+                choices_submitted: 0,
+                time_remaining_seconds: 0,
+            };
+        }
+
+        let round = get_round(&env).unwrap_or(RoundState {
+            round_number: 0,
+            round_start_ledger: 0,
+            round_deadline_ledger: 0,
+            active: false,
+            total_submissions: 0,
+            timed_out: false,
+            finished: false,
+        });
+
+        let survivors_remaining: u32 = env
+            .storage()
+            .instance()
+            .get(&SURVIVOR_COUNT_KEY)
+            .unwrap_or(0);
+        let choices_submitted: u32 = env
+            .storage()
+            .instance()
+            .get(&SUBMITTED_COUNT_KEY)
+            .unwrap_or(0);
+        let round_deadline: u64 = env
+            .storage()
+            .instance()
+            .get(&DEADLINE_TS_KEY)
+            .unwrap_or(0);
+
+        let current_time = env.ledger().timestamp() as i64;
+        let remaining = (round_deadline as i64) - current_time;
+        let time_remaining_seconds = if remaining > 0 { remaining } else { 0 };
+        
+        RoundStats {
+            round: round.round_number,
+            round_deadline,
+            survivors_remaining,
+            choices_submitted,
+            time_remaining_seconds,
+        }
+    }
+
+    pub fn is_round_active(env: Env) -> bool {
+        get_round(&env).map(|r| r.active).unwrap_or(false)
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -984,6 +1090,20 @@ fn outcome_symbol(outcome: &Option<Choice>) -> Symbol {
         Some(Choice::Tails) => symbol_short!("TAILS"),
         None => symbol_short!("NONE"),
     }
+}
+
+fn get_state(env: &Env) -> ArenaState {
+    storage(env)
+        .get(&DataKey::State)
+        .unwrap_or(ArenaState::Pending)
+}
+
+fn set_state(env: &Env, new_state: ArenaState) {
+    let old_state = get_state(env);
+    if old_state == new_state {
+        return;
+    }
+    storage(env).set(&DataKey::State, &new_state);
 }
 
 fn bump(env: &Env, key: &DataKey) {
