@@ -323,18 +323,9 @@ pub struct ArenaContract;
 
 #[contractimpl]
 impl ArenaContract {
-    pub fn initialize(env: Env, admin: Address) {
-        if env.storage().instance().has(&ADMIN_KEY) {
-            panic!("already initialized");
-        }
+    pub fn __constructor(env: Env, admin: Address) {
         admin.require_auth();
         env.storage().instance().set(&ADMIN_KEY, &admin);
-        env.storage()
-            .instance()
-            .set(&STATE_KEY, &ArenaState::Pending);
-        env.storage()
-            .instance()
-            .extend_ttl(GAME_TTL_THRESHOLD, GAME_TTL_EXTEND_TO);
     }
 
     pub fn admin(env: Env) -> Address {
