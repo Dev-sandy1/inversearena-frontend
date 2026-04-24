@@ -3063,3 +3063,310 @@ fn set_max_rounds_accepts_boundary_values() {
     assert!(client.try_set_max_rounds(&bounds::MAX_MAX_ROUNDS).is_ok());
     assert!(client.try_set_max_rounds(&bounds::DEFAULT_MAX_ROUNDS).is_ok());
 }
+
+// ── Issue #477: minority-resolution invariants (proptest) ────────────────────
+//
+// These property tests fuzz the heads/tails distributions across many random
+// player counts and assert the structural invariants of `resolve_round`:
+//
+//   1. survivors + eliminated == total participants
+//   2. the strict minority side always advances
+//   3. a 1-vs-many split keeps the singleton alive
+//   4. no player is in both the survivor and eliminated sets
+//   5. resolve_round is idempotent — a second call cannot mutate state
+//   6. ties resolve deterministically for the same PRNG seed (no flakiness)
+//
+// The runtime budget per proptest case is dominated by the Soroban env
+// bootstrap (`make_env`, `create_client`, `seed_joined_players`), so the
+// player-count ranges are kept modest; the `with_cases(...)` counts honour
+// the issue's "≥ 1000 cases per invariant" target where setup cost allows.
+
+/// Build a fresh arena, join `heads + tails` players, submit their choices,
+/// advance well past `deadline + grace`, and resolve the round.
+///
+/// Returns the env, client, and the two player vectors so callers can read
+/// per-player survivor flags through the public API or directly inspect
+/// persistent storage via `env.as_contract`.
+///
+/// The ledger is jumped to **110** after start (round_speed = 5, start = 100,
+/// deadline = 105, grace_ledgers = 2 → resolve_after = 107). Older
+/// `resolve_round` tests in this file land at 106 and trip the grace gate;
+/// 110 leaves a comfortable margin.
+fn run_minority_resolution(
+    heads: u32,
+    tails: u32,
+) -> (
+    Env,
+    ArenaContractClient<'static>,
+    std::vec::Vec<Address>,
+    std::vec::Vec<Address>,
+) {
+    let total = heads + tails;
+    let (env, _admin, client, _token_id, players) = setup_game(5, total);
+
+    set_ledger_sequence(&env, 100);
+    client.start_round();
+
+    let heads_players: std::vec::Vec<Address> = players[..heads as usize].to_vec();
+    let tails_players: std::vec::Vec<Address> = players[heads as usize..].to_vec();
+
+    for p in &heads_players {
+        client.submit_choice(p, &1u32, &Choice::Heads);
+    }
+    for p in &tails_players {
+        client.submit_choice(p, &1u32, &Choice::Tails);
+    }
+
+    set_ledger_sequence(&env, 110);
+    client.resolve_round();
+    (env, client, heads_players, tails_players)
+}
+
+// ── Invariant 1: survivors + eliminated == total participants ────────────────
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(1000))]
+
+    #[test]
+    fn prop_resolution_survivors_plus_eliminated_equals_total(
+        heads in 1u32..=4u32,
+        tails in 1u32..=4u32,
+    ) {
+        let (_env, client, heads_players, tails_players) =
+            run_minority_resolution(heads, tails);
+
+        let mut survivors = 0u32;
+        let mut eliminated = 0u32;
+        for p in heads_players.iter().chain(tails_players.iter()) {
+            if client.get_user_state(p).is_active {
+                survivors += 1;
+            } else {
+                eliminated += 1;
+            }
+        }
+        let total = heads + tails;
+        prop_assert_eq!(
+            survivors + eliminated, total,
+            "survivors ({}) + eliminated ({}) must equal total ({})",
+            survivors, eliminated, total
+        );
+        // Cross-check against the contract's own counter.
+        prop_assert_eq!(client.get_arena_state().survivors_count, survivors);
+    }
+}
+
+// ── Invariant 2: minority side always advances when counts differ ────────────
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(1000))]
+
+    #[test]
+    fn prop_resolution_minority_side_advances(
+        smaller in 1u32..=3u32,
+        delta   in 1u32..=4u32, // larger group has strictly more players
+    ) {
+        let larger = smaller + delta;
+
+        // Randomise which side is the minority by flipping the role.
+        for (heads, tails, minority_is_heads) in [
+            (smaller, larger, true),
+            (larger, smaller, false),
+        ] {
+            let (_env, client, heads_players, tails_players) =
+                run_minority_resolution(heads, tails);
+
+            let (survivors, eliminated) = if minority_is_heads {
+                (&heads_players, &tails_players)
+            } else {
+                (&tails_players, &heads_players)
+            };
+
+            for p in survivors {
+                prop_assert!(
+                    client.get_user_state(p).is_active,
+                    "minority-side player must survive"
+                );
+            }
+            for p in eliminated {
+                prop_assert!(
+                    !client.get_user_state(p).is_active,
+                    "majority-side player must be eliminated"
+                );
+            }
+            prop_assert_eq!(
+                client.get_arena_state().survivors_count,
+                smaller,
+                "survivor count must equal the minority size"
+            );
+        }
+    }
+}
+
+// ── Invariant 3: 1-vs-many — the lone player always advances ─────────────────
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(1000))]
+
+    #[test]
+    fn prop_resolution_one_versus_many_singleton_survives(
+        many in 2u32..=6u32,
+        lone_picks_heads in proptest::bool::ANY,
+    ) {
+        let (heads, tails) = if lone_picks_heads { (1, many) } else { (many, 1) };
+        let (_env, client, heads_players, tails_players) =
+            run_minority_resolution(heads, tails);
+
+        let (singleton, crowd) = if lone_picks_heads {
+            (&heads_players[0], &tails_players)
+        } else {
+            (&tails_players[0], &heads_players)
+        };
+
+        prop_assert!(
+            client.get_user_state(singleton).is_active,
+            "the singleton must always survive against any crowd"
+        );
+        for p in crowd {
+            prop_assert!(
+                !client.get_user_state(p).is_active,
+                "every crowd member must be eliminated"
+            );
+        }
+        prop_assert_eq!(client.get_arena_state().survivors_count, 1);
+    }
+}
+
+// ── Invariant 4: survivor and eliminated sets are disjoint ───────────────────
+//
+// Reads the persistent storage directly so we catch any latent inconsistency
+// between the `Survivor(p)` and `Eliminated(p)` flags, not just whatever the
+// public view derives.
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(1000))]
+
+    #[test]
+    fn prop_resolution_no_player_in_both_sets(
+        heads in 1u32..=4u32,
+        tails in 1u32..=4u32,
+    ) {
+        let (env, client, heads_players, tails_players) =
+            run_minority_resolution(heads, tails);
+
+        for player in heads_players.iter().chain(tails_players.iter()) {
+            let (is_survivor, is_eliminated) = env.as_contract(&client.address, || {
+                let s = env
+                    .storage()
+                    .persistent()
+                    .has(&DataKey::Survivor(player.clone()));
+                let e = env
+                    .storage()
+                    .persistent()
+                    .has(&DataKey::Eliminated(player.clone()));
+                (s, e)
+            });
+            prop_assert!(
+                !(is_survivor && is_eliminated),
+                "no player may be in both Survivor and Eliminated sets"
+            );
+            prop_assert!(
+                is_survivor || is_eliminated,
+                "every joined player must be in exactly one of the two sets"
+            );
+        }
+    }
+}
+
+// ── Invariant 5: resolve_round is idempotent ─────────────────────────────────
+//
+// `resolve_round` flips `round.active = false` and `round.finished = true`,
+// so a second call must reject (no mutation). We snapshot every player's
+// active flag before and after to prove no survivor / eliminated set churn.
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(500))]
+
+    #[test]
+    fn prop_resolve_round_is_idempotent(
+        heads in 1u32..=4u32,
+        tails in 1u32..=4u32,
+    ) {
+        let (_env, client, heads_players, tails_players) =
+            run_minority_resolution(heads, tails);
+
+        let snapshot: std::vec::Vec<bool> = heads_players
+            .iter()
+            .chain(tails_players.iter())
+            .map(|p| client.get_user_state(p).is_active)
+            .collect();
+        let survivors_before = client.get_arena_state().survivors_count;
+
+        // A second resolve_round must not succeed and must not mutate state.
+        let second = client.try_resolve_round();
+        prop_assert!(second.is_err(), "second resolve_round must error");
+
+        let after: std::vec::Vec<bool> = heads_players
+            .iter()
+            .chain(tails_players.iter())
+            .map(|p| client.get_user_state(p).is_active)
+            .collect();
+        prop_assert_eq!(snapshot, after, "no player flags may change on a second call");
+        prop_assert_eq!(
+            client.get_arena_state().survivors_count,
+            survivors_before,
+            "survivor count must be stable across a redundant resolve"
+        );
+    }
+}
+
+// ── Invariant 6: tie tiebreaker is deterministic for a fixed PRNG seed ───────
+//
+// The issue calls out "Tie tiebreaker is deterministic for the same ledger
+// sequence (no flakiness)". `choose_surviving_side` consults `env.prng()` on
+// an exact tie, and the existing tests seed the contract PRNG to make tie
+// outcomes reproducible. Re-running the same scenario with the same seed must
+// always elect the same survivor.
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(200))]
+
+    #[test]
+    fn prop_resolution_tie_break_is_deterministic_for_same_prng_seed(
+        side_size in 1u32..=4u32,
+        seed_byte in 0u8..=255u8,
+    ) {
+        // Two independent runs of the SAME tie scenario with the SAME PRNG
+        // seed must produce the same survivor.
+        fn run_tie(side_size: u32, seed_byte: u8) -> (bool, bool) {
+            let total = side_size + side_size;
+            let (env, _admin, client, _token_id, players) = setup_game(5, total);
+
+            set_ledger_sequence(&env, 100);
+            client.start_round();
+            for i in 0..side_size as usize {
+                client.submit_choice(&players[i], &1u32, &Choice::Heads);
+            }
+            for i in side_size as usize..total as usize {
+                client.submit_choice(&players[i], &1u32, &Choice::Tails);
+            }
+            seed_contract_prng(&env, &client.address, [seed_byte; 32]);
+            set_ledger_sequence(&env, 110);
+            client.resolve_round();
+
+            // Encode the outcome as (heads_player_0_active, tails_player_0_active).
+            (
+                client.get_user_state(&players[0]).is_active,
+                client.get_user_state(&players[side_size as usize]).is_active,
+            )
+        }
+
+        let first  = run_tie(side_size, seed_byte);
+        let second = run_tie(side_size, seed_byte);
+        prop_assert_eq!(
+            first, second,
+            "same PRNG seed must produce the same tie-break winner across runs"
+        );
+        // Sanity: exactly one side wins a tie (xor).
+        prop_assert!(first.0 ^ first.1, "exactly one side must survive a tie");
+    }
+}
