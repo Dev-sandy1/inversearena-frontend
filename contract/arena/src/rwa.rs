@@ -1,4 +1,5 @@
 /// RWA yield vault adapter for the ArenaContract.
+use soroban_sdk::IntoVal;
 ///
 /// Provides a thin layer over cross-contract vault calls so the rest of the
 /// arena logic stays decoupled from the specific vault interface.

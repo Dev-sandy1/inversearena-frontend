@@ -77,6 +77,7 @@ const EVENT_VERSION: u32 = 1;
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum ArenaError {
+    AlreadyInitialized = 1,
     InvalidRoundSpeed = 2,
     RoundAlreadyActive = 3,
     NoActiveRound = 4,
@@ -112,10 +113,6 @@ pub enum ArenaError {
     NameTooLong = 34,
     NameEmpty = 35,
     DescriptionTooLong = 36,
-    NoCommitment = 37,
-    CommitmentMismatch = 38,
-    RevealDeadlinePassed = 39,
-    CommitDeadlinePassed = 40,
     AlreadyCommitted = 41,
     DeadlineTooSoon = 42,
     DeadlineTooFar = 43,
@@ -126,8 +123,10 @@ pub enum ArenaError {
     BatchAlreadyInProgress = 48,
     NoBatchInProgress = 49,
     BatchNotComplete = 50,
-    U = 51,
     Unauthorized = 51,
+    NoPendingAdminTransfer = 52,
+    AdminTransferExpired = 53,
+    VaultNotSet = 54,
 }
 
 #[contracttype]
@@ -578,6 +577,20 @@ impl ArenaContract {
         config.winner_yield_share_bps = bps;
         env.storage().instance().set(&DataKey::Config, &config);
         env.storage().instance().set(&WINNER_SHARE_KEY, &bps);
+        Ok(())
+    }
+
+    pub fn set_max_rounds(env: Env, max_rounds: u32) -> Result<(), ArenaError> {
+        let admin = Self::admin(env.clone());
+        admin.require_auth();
+
+        if !(bounds::MIN_MAX_ROUNDS..=bounds::MAX_MAX_ROUNDS).contains(&max_rounds) {
+            return Err(ArenaError::InvalidMaxRounds);
+        }
+
+        let mut config = get_config(&env)?;
+        config.max_rounds = max_rounds;
+        env.storage().instance().set(&DataKey::Config, &config);
         Ok(())
     }
 

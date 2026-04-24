@@ -34,6 +34,7 @@ fn test_snapshots() {
         required_stake_amount: 1000,
         max_rounds: 5,
         winner_yield_share_bps: 5000,
+        grace_period_seconds: 60,
         join_deadline: 123456789,
         win_fee_bps: 100,
         is_private: false,
@@ -63,6 +64,7 @@ fn test_snapshots() {
         round_number: 2,
         current_stake: 5000,
         potential_payout: 50000,
+        vault_active: true,
     }, b"");
     
     // FullStateView
@@ -74,6 +76,7 @@ fn test_snapshots() {
         potential_payout: 50000,
         is_active: true,
         has_won: false,
+        vault_active: true,
     }, b"");
     
     // ArenaState

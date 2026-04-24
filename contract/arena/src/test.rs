@@ -3176,7 +3176,7 @@ fn cancel_admin_transfer_with_no_pending_returns_error() {
 fn toggle_vault_active_stores_flag() {
     let (_env, _admin, client) = setup_with_admin();
     client.toggle_vault_active(&true);
-    let state = client.get_arena_state().unwrap_err(); // not initialized yet — just check the flag via storage
+    let state = client.try_get_arena_state().unwrap().unwrap_err(); // not initialized yet — just check the flag via storage
     // Since init hasn't been called, use a raw approach: confirm toggle_vault_active returns Ok.
     assert!(client.try_toggle_vault_active(&false).is_ok());
 }
@@ -3186,7 +3186,7 @@ fn complete_with_yield_no_vault_pays_principal() {
     let (env, _admin, client, token_id, players) = setup_game(5, 2);
     // Run a round so one player is eliminated.
     client.start_round();
-    let round = client.get_round().unwrap();
+    let round = client.get_round();
     let p0 = players[0].clone();
     let p1 = players[1].clone();
     client.submit_choice(&p0, &round.round_number, &Choice::Heads);
@@ -3398,3 +3398,30 @@ fn full_state_view_is_idempotent_across_repeated_calls() {
     assert_eq!(first, second);
     assert_eq!(second, third);
 }
+
+#[test]
+fn test_prize_pool_manipulation_protection() {
+    let (env, _admin, client, token_id, _players) = setup_game(5, 3);
+    let asset = StellarAssetClient::new(&env, &token_id);
+    let arena_id = client.address.clone();
+    
+    // Initial prize pool from 3 players joining (100 * 3 = 300)
+    let initial_state = client.get_arena_state();
+    assert_eq!(initial_state.current_stake, 300);
+    
+    // Attacker sends tokens directly to the contract address without joining
+    let attacker = Address::generate(&env);
+    asset.mint(&attacker, &1000);
+    
+    // Use token client for transfer
+    let token_client = token::Client::new(&env, &token_id);
+    token_client.transfer(&attacker, &arena_id, &500);
+    
+    // Check prize pool again - it should STILL be 300
+    let after_attack_state = client.get_arena_state();
+    assert_eq!(after_attack_state.current_stake, 300, "Prize pool was inflated by direct transfer!");
+    
+    // Verify that the actual token balance IS higher, but the contract doesn't use it
+    assert_eq!(token_client.balance(&arena_id), 800); // 300 (joins) + 500 (attack)
+}
+
