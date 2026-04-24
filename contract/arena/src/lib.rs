@@ -242,6 +242,24 @@ pub struct PlayerJoined {
 }
 
 #[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlayerStatus {
+    Active,
+    Elim,
+    Winner,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlayerSnapshot {
+    pub player: Address,
+    pub status: PlayerStatus,
+    pub eliminated_round: Option<u32>,
+    pub choice_this_round: Option<Choice>,
+    pub total_rounds_survived: u32,
+}
+
+#[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChoiceSubmitted {
     pub arena_id: u64,
@@ -405,6 +423,7 @@ enum DataKey {
     AllPlayers,
     Survivor(Address),
     Eliminated(Address),
+    ElimRound(Address),
     PrizeClaimed(Address),
     Claimable(Address),
     Winner(Address),
@@ -622,8 +641,11 @@ impl ArenaContract {
     pub fn join(env: Env, player: Address, amount: i128) -> Result<(), ArenaError> {
         player.require_auth();
         require_not_paused(&env)?;
-        if Self::is_cancelled(env.clone()) {
-            return Err(ArenaError::AlreadyCancelled);
+        match state(&env) {
+            ArenaState::Pending => {}
+            ArenaState::Active => return Err(ArenaError::RoundAlreadyActive),
+            ArenaState::Completed => return Err(ArenaError::GameAlreadyFinished),
+            ArenaState::Cancelled => return Err(ArenaError::AlreadyCancelled),
         }
         let config = get_config(&env)?;
         let arena_id: u64 = env.storage().instance().get(&DataKey::ArenaId).unwrap_or(0);
@@ -714,6 +736,19 @@ impl ArenaContract {
             );
         }
         Ok(())
+    }
+
+    pub fn player_join(env: Env, player: Address, arena_id: u64) -> Result<(), ArenaError> {
+        let stored_arena_id: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ArenaId)
+            .unwrap_or(arena_id);
+        if stored_arena_id != arena_id {
+            return Err(ArenaError::Unauthorized);
+        }
+        let config = get_config(&env)?;
+        Self::join(env, player, config.required_stake_amount)
     }
 
     /// Expire an unfilled arena past its join deadline. Callable by anyone.
@@ -1013,6 +1048,9 @@ impl ArenaContract {
                 env.storage()
                     .persistent()
                     .set(&DataKey::Eliminated(player.clone()), &true);
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::ElimRound(player.clone()), &round.round_number);
                 eliminated_count += 1;
             }
         }
@@ -1165,6 +1203,9 @@ impl ArenaContract {
                 env.storage()
                     .persistent()
                     .set(&DataKey::Eliminated(player.clone()), &true);
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::ElimRound(player.clone()), &state.round_number);
                 eliminated_count += 1;
             }
         }
@@ -1307,6 +1348,56 @@ impl ArenaContract {
 
     pub fn get_user_state(env: Env, player: Address) -> UserStateView {
         PlayerCache::load(&env, &player).user_state_view()
+    }
+
+    pub fn get_player_state(env: Env, player: Address) -> PlayerSnapshot {
+        let persistent = env.storage().persistent();
+        let is_survivor = persistent.has(&DataKey::Survivor(player.clone()));
+        let is_winner = persistent.has(&DataKey::Winner(player.clone()));
+        let is_eliminated = persistent.has(&DataKey::Eliminated(player.clone()));
+        if !is_survivor && !is_winner && !is_eliminated {
+            panic_with_error!(&env, ArenaError::Unauthorized);
+        }
+
+        let status = if is_winner {
+            PlayerStatus::Winner
+        } else if is_survivor {
+            PlayerStatus::Active
+        } else {
+            PlayerStatus::Elim
+        };
+
+        let round =
+            get_round(&env).unwrap_or_else(|_| panic_with_error!(&env, ArenaError::NotInitialized));
+        let eliminated_round: Option<u32> = persistent.get(&DataKey::ElimRound(player.clone()));
+        let reveal_choice = !round.active || env.ledger().sequence() > round.round_deadline_ledger;
+        let choice_this_round = if reveal_choice && round.round_number > 0 {
+            persistent.get(&DataKey::Choices(0, round.round_number, player.clone()))
+        } else {
+            None
+        };
+
+        let total_rounds_survived = match status {
+            PlayerStatus::Winner => round.round_number,
+            PlayerStatus::Elim => eliminated_round.unwrap_or(round.round_number).saturating_sub(1),
+            PlayerStatus::Active => {
+                if round.round_number == 0 {
+                    0
+                } else if round.active {
+                    round.round_number - 1
+                } else {
+                    round.round_number
+                }
+            }
+        };
+
+        PlayerSnapshot {
+            player,
+            status,
+            eliminated_round,
+            choice_this_round,
+            total_rounds_survived,
+        }
     }
 
     pub fn get_full_state(env: Env, player: Address) -> Result<FullStateView, ArenaError> {

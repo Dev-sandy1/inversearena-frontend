@@ -25,6 +25,8 @@
 /// - `withdraw(shares: i128) -> i128`                 — burns shares, returns tokens.
 pub struct RwaVaultAdapter;
 
+use soroban_sdk::IntoVal;
+
 impl RwaVaultAdapter {
     /// Call `vault.deposit(token, amount)` and return the shares minted.
     ///
@@ -44,11 +46,7 @@ impl RwaVaultAdapter {
     }
 
     /// Call `vault.withdraw(shares)` and return the tokens received.
-    pub fn withdraw(
-        env: &soroban_sdk::Env,
-        vault: &soroban_sdk::Address,
-        shares: i128,
-    ) -> i128 {
+    pub fn withdraw(env: &soroban_sdk::Env, vault: &soroban_sdk::Address, shares: i128) -> i128 {
         env.invoke_contract(
             vault,
             &soroban_sdk::Symbol::new(env, "withdraw"),

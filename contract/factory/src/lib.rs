@@ -79,10 +79,38 @@ pub struct ArenaRef {
     pub host: Address,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreateArenaConfig {
+    pub stake_amount: i128,
+    pub currency: Address,
+    pub round_speed: u32,
+    pub capacity: u32,
+    pub join_deadline: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ArenaSummary {
+    pub arena_id: u64,
+    pub contract: Address,
+    pub status: ArenaStatus,
+    pub host: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ArenaPage {
+    pub items: Vec<ArenaSummary>,
+    pub next_cursor: Option<u64>,
+    pub has_more: bool,
+}
+
 // ── Capacity limits ───────────────────────────────────────────────────────────
 
 const MAX_POOL_CAPACITY: u32 = 256;
 const MAX_PAGE_SIZE: u32 = 50;
+const MAX_CURSOR_PAGE_SIZE: u32 = 100;
 
 // ── Player-cap (DoS hardening, see issue #495) ────────────────────────────────
 //
@@ -141,6 +169,7 @@ const TOPIC_FEE_QUEUED: Symbol = symbol_short!("FEE_Q");
 const TOPIC_FEE_EXECUTED: Symbol = symbol_short!("FEE_EX");
 const TOPIC_FEE_CANCELLED: Symbol = symbol_short!("FEE_CAN");
 const TOPIC_FEE_CONFIG_UPDATED: Symbol = symbol_short!("CRF_UP");
+const TOPIC_ARENA_CREATED: Symbol = symbol_short!("ARNA_CRE");
 
 /// Event payload version. Include in every event data tuple so consumers
 /// can detect schema changes without re-deploying indexers.
@@ -834,6 +863,14 @@ impl FactoryContract {
         env.storage()
             .persistent()
             .set(&DataKey::Pool(pool_id), &metadata);
+        env.storage().persistent().set(
+            &DataKey::ArenaRef(pool_id as u64),
+            &ArenaRef {
+                contract: arena_address.clone(),
+                status: ArenaStatus::Pending,
+                host: caller.clone(),
+            },
+        );
 
         // Increment the pool counter.
         env.storage()
@@ -866,6 +903,47 @@ impl FactoryContract {
         );
 
         Ok(arena_address)
+    }
+
+    pub fn create_arena(
+        env: Env,
+        host: Address,
+        config: CreateArenaConfig,
+        name: String,
+        description: Option<String>,
+    ) -> Result<(u64, Address), Error> {
+        let arena_address = Self::create_pool(
+            env.clone(),
+            host.clone(),
+            config.stake_amount,
+            config.currency.clone(),
+            config.round_speed,
+            config.capacity,
+            config.join_deadline,
+        )?;
+
+        let arena_id = env
+            .storage()
+            .instance()
+            .get::<_, u32>(&POOL_COUNT_KEY)
+            .unwrap_or(0u32)
+            .saturating_sub(1) as u64;
+
+        Self::set_arena_metadata(
+            env.clone(),
+            arena_address.clone(),
+            arena_id,
+            name,
+            description,
+            host.clone(),
+        );
+
+        env.events().publish(
+            (TOPIC_ARENA_CREATED,),
+            (EVENT_VERSION, arena_id, host, arena_address.clone(), config),
+        );
+
+        Ok((arena_id, arena_address))
     }
 
     /// Set human-readable metadata on a deployed arena contract.
@@ -1275,6 +1353,23 @@ impl FactoryContract {
         results
     }
 
+    pub fn list_arenas(env: Env, cursor: Option<u64>, limit: u32) -> ArenaPage {
+        list_arenas_filtered(&env, cursor, limit, false, None)
+    }
+
+    pub fn list_active_arenas(env: Env, cursor: Option<u64>, limit: u32) -> ArenaPage {
+        list_arenas_filtered(&env, cursor, limit, true, None)
+    }
+
+    pub fn list_arenas_by_host(
+        env: Env,
+        host: Address,
+        cursor: Option<u64>,
+        limit: u32,
+    ) -> ArenaPage {
+        list_arenas_filtered(&env, cursor, limit, false, Some(host))
+    }
+
     // ── Emergency pause ──────────────────────────────────────────────────────
 
     /// Pause the contract, disabling all write operations. Admin-only.
@@ -1359,7 +1454,8 @@ impl FactoryContract {
         }
         env.storage().instance().remove(&PENDING_ADMIN_KEY);
         env.storage().instance().remove(&ADMIN_EXPIRY_KEY);
-        env.events().publish((TOPIC_ADMIN_CANCELLED,), (EVENT_VERSION,));
+        env.events()
+            .publish((TOPIC_ADMIN_CANCELLED,), (EVENT_VERSION,));
         Ok(())
     }
 
@@ -1390,6 +1486,82 @@ fn require_not_paused(env: &Env) -> Result<(), Error> {
         return Err(Error::Paused);
     }
     Ok(())
+}
+
+fn list_arenas_filtered(
+    env: &Env,
+    cursor: Option<u64>,
+    limit: u32,
+    only_active: bool,
+    host_filter: Option<Address>,
+) -> ArenaPage {
+    let start_id = cursor.map(|id| id.saturating_add(1)).unwrap_or(0u64);
+    let limit = limit.min(MAX_CURSOR_PAGE_SIZE);
+    let pool_count = env
+        .storage()
+        .instance()
+        .get(&POOL_COUNT_KEY)
+        .unwrap_or(0u32) as u64;
+
+    let mut items = Vec::new(env);
+    let mut scanned = start_id;
+    let mut last_included: Option<u64> = None;
+
+    while scanned < pool_count && items.len() < limit {
+        if let Some(summary) = load_arena_summary(env, scanned) {
+            if matches_arena_filter(&summary, only_active, host_filter.as_ref()) {
+                items.push_back(summary);
+                last_included = Some(scanned);
+            }
+        }
+        scanned = scanned.saturating_add(1);
+    }
+
+    let mut has_more = false;
+    let mut probe = last_included
+        .map(|id| id.saturating_add(1))
+        .unwrap_or(start_id);
+    while probe < pool_count {
+        if let Some(summary) = load_arena_summary(env, probe) {
+            if matches_arena_filter(&summary, only_active, host_filter.as_ref()) {
+                has_more = true;
+                break;
+            }
+        }
+        probe = probe.saturating_add(1);
+    }
+
+    ArenaPage {
+        items,
+        next_cursor: if has_more { last_included } else { None },
+        has_more,
+    }
+}
+
+fn load_arena_summary(env: &Env, arena_id: u64) -> Option<ArenaSummary> {
+    let arena_ref: Option<ArenaRef> = env.storage().persistent().get(&DataKey::ArenaRef(arena_id));
+    arena_ref.map(|entry| ArenaSummary {
+        arena_id,
+        contract: entry.contract,
+        status: entry.status,
+        host: entry.host,
+    })
+}
+
+fn matches_arena_filter(
+    summary: &ArenaSummary,
+    only_active: bool,
+    host_filter: Option<&Address>,
+) -> bool {
+    if only_active && summary.status != ArenaStatus::Active {
+        return false;
+    }
+    if let Some(host) = host_filter {
+        if summary.host != *host {
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(test)]
